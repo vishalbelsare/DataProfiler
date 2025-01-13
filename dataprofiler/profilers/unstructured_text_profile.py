@@ -1,34 +1,39 @@
 """For profiling unstructured text data."""
+from __future__ import annotations
 
 import itertools
 import string
 import warnings
 from collections import Counter, defaultdict
 
-from . import BaseColumnProfiler, utils
+from numpy import ndarray
+from pandas import DataFrame, Series
+
+from . import profiler_utils
+from .base_column_profilers import BaseColumnProfiler
 from .profiler_options import TextProfilerOptions
 
 
-class TextProfiler(object):
+class TextProfiler:
     """Profiles text data."""
 
     type = "text"
 
-    def __init__(self, name, options=None):
+    def __init__(self, name: str | None, options: TextProfilerOptions = None) -> None:
         """
         Initialize TextProfiler object.
 
         :param name: Name of the data
         :type name: String
         :param options: Options for the Text Profiler
-        :type options: UnstructuredTextOptions
+        :type options: TextProfilerOptions
         """
-        self.name = name
-        self.sample_size = 0
-        self.times = defaultdict(float)
-        self.vocab_count = Counter()
-        self.word_count = Counter()
-        self.metadata = dict()
+        self.name: str | None = name
+        self.sample_size: int = 0
+        self.times: dict = defaultdict(float)
+        self.vocab_count: Counter = Counter()
+        self.word_count: Counter = Counter()
+        self.metadata: dict = dict()
 
         # TODO: Add line length
         # self.line_length = {'max': None, 'min': None,...} #numeric stats mixin?
@@ -470,7 +475,7 @@ class TextProfiler(object):
         BaseColumnProfiler._filter_properties_w_options(self.__calculations, options)
 
     @staticmethod
-    def _merge_vocab(vocab_count1, vocab_count2):
+    def _merge_vocab(vocab_count1: Counter, vocab_count2: Counter) -> Counter:
         """
         Merge the vocab counts of two TextProfiler profiles.
 
@@ -482,7 +487,7 @@ class TextProfiler(object):
         """
         return vocab_count1 + vocab_count2
 
-    def _merge_words(self, other, merged_profile):
+    def _merge_words(self, other: TextProfiler, merged_profile: TextProfiler) -> None:
         """
         Merge the words of two TextProfiler profiles.
 
@@ -509,7 +514,7 @@ class TextProfiler(object):
                     merged_profile.word_count.pop(w)
                     merged_profile.word_count.update({w.lower(): c})
 
-    def __add__(self, other):
+    def __add__(self, other: TextProfiler) -> TextProfiler:
         """
         Merge the properties of two TextProfiler profiles.
 
@@ -518,6 +523,7 @@ class TextProfiler(object):
         :type self: TextProfiler
         :type other: TextProfiler
         :return: New TextProfiler merged profile
+        :rtype: TextProfiler
         """
         if not isinstance(other, TextProfiler):
             raise TypeError(
@@ -529,9 +535,7 @@ class TextProfiler(object):
         if self.name == other.name:
             merged_profile.name = self.name
         else:
-            raise ValueError(
-                "Text names unmatched: {} != {}".format(self.name, other.name)
-            )
+            raise ValueError(f"Text names unmatched: {self.name} != {other.name}")
 
         merged_profile.times = defaultdict(
             float,
@@ -574,7 +578,7 @@ class TextProfiler(object):
 
         return merged_profile
 
-    def diff(self, other_profile, options=None):
+    def diff(self, other_profile: TextProfiler, options: dict = None) -> dict:
         """
         Find the differences for two unstructured text profiles.
 
@@ -605,27 +609,29 @@ class TextProfiler(object):
             other_words = [each_string.lower() for each_string in other_words]
             other_word_count = {k.lower(): v for k, v in other_word_count.items()}
 
-        diff = {}
-        diff["vocab"] = utils.find_diff_of_lists_and_sets(
+        diff: dict = {}
+        diff["vocab"] = profiler_utils.find_diff_of_lists_and_sets(
             list(self.vocab_count.keys()), list(other_profile.vocab_count.keys())
         )
 
-        diff["vocab_count"] = utils.find_diff_of_dicts_with_diff_keys(
+        diff["vocab_count"] = profiler_utils.find_diff_of_dicts_with_diff_keys(
             dict(self.vocab_count.most_common(self._top_k_chars)),
             dict(other_profile.vocab_count.most_common(self._top_k_chars)),
         )
 
-        diff["words"] = utils.find_diff_of_lists_and_sets(self_words, other_words)
+        diff["words"] = profiler_utils.find_diff_of_lists_and_sets(
+            self_words, other_words
+        )
 
-        diff["word_count"] = utils.find_diff_of_dicts_with_diff_keys(
+        diff["word_count"] = profiler_utils.find_diff_of_dicts_with_diff_keys(
             self_word_count, other_word_count
         )
 
         return diff
 
-    def report(self, remove_disabled_flag=False):
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """Report profile attribute of class; potentially pop val from self.profile."""
-        calcs_dict_keys = self._TextProfiler__calculations.keys()
+        calcs_dict_keys = self._TextProfiler__calculations.keys()  # type: ignore
         profile = self.profile
 
         if remove_disabled_flag:
@@ -642,11 +648,12 @@ class TextProfiler(object):
         return profile
 
     @property
-    def profile(self):
+    def profile(self) -> dict:
         """
         Return the profile of the column.
 
-        :return:
+        :return: profile of the column
+        :rtype: dict
         """
         profile = dict(
             vocab=list(self.vocab_count.keys()),
@@ -659,8 +666,11 @@ class TextProfiler(object):
 
     @BaseColumnProfiler._timeit(name="vocab")
     def _update_vocab(
-        self, data, prev_dependent_properties=None, subset_properties=None
-    ):
+        self,
+        data: list | ndarray | DataFrame,
+        prev_dependent_properties: dict = None,
+        subset_properties: dict = None,
+    ) -> None:
         """
         Find the vocabulary counts used in the text samples.
 
@@ -679,8 +689,11 @@ class TextProfiler(object):
 
     @BaseColumnProfiler._timeit(name="words")
     def _update_words(
-        self, data, prev_dependent_properties=None, subset_properties=None
-    ):
+        self,
+        data: list | ndarray | DataFrame,
+        prev_dependent_properties: dict = None,
+        subset_properties: dict = None,
+    ) -> None:
         """
         Find unique words and word count used in the text samples.
 
@@ -707,7 +720,7 @@ class TextProfiler(object):
             if w and w.lower() not in self._stop_words:
                 self.word_count.update({w: c})
 
-    def _update_helper(self, data, profile):
+    def _update_helper(self, data: Series, profile: dict) -> None:
         """
         Update col profile properties with clean dataset and its known null parameters.
 
@@ -720,13 +733,14 @@ class TextProfiler(object):
         self.sample_size += profile.pop("sample_size")
         self.metadata = profile
 
-    def update(self, data):
+    def update(self, data: Series) -> TextProfiler:
         """
         Update the column profile.
 
         :param data: df series
         :type data: pandas.core.series.Series
-        :return: None
+        :return: updated TextProfiler
+        :rtype: TextProfiler
         """
         len_data = len(data)
         if len_data == 0:
@@ -735,7 +749,7 @@ class TextProfiler(object):
         profile = dict(sample_size=len_data)
 
         BaseColumnProfiler._perform_property_calcs(
-            self,
+            self,  # type: ignore
             self.__calculations,
             df_series=data,
             prev_dependent_properties={},

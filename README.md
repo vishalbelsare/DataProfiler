@@ -1,10 +1,19 @@
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/DataProfiler)
 ![GitHub](https://img.shields.io/github/license/CapitalOne/DataProfiler)
 ![GitHub last commit](https://img.shields.io/github/last-commit/CapitalOne/DataProfiler)
+[![Downloads](https://static.pepy.tech/badge/dataprofiler)](https://pepy.tech/project/dataprofiler)
+
+<p text-align="left">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/capitalone/DataProfiler/raw/gh-pages/docs/source/_static/images/DataProfilerDarkLogoLong.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://github.com/capitalone/DataProfiler/raw/gh-pages/docs/source/_static/images/DataProfilerLogoLightThemeLong.png">
+      <img alt="Shows a black logo in light color mode and a white one in dark color mode." src="https://user-images.githubusercontent.com/25423296/163456779-a8556205-d0a5-45e2-ac17-42d089e3c3f8.png">
+    </picture>
+</p>
 
 # Data Profiler | What's in your data?
 
-The DataProfiler is a Python library designed to make data analysis, monitoring and **sensitive data detection** easy.
+The DataProfiler is a Python library designed to make data analysis, monitoring, and **sensitive data detection** easy.
 
 Loading **Data** with a single command, the library automatically formats & loads files into a DataFrame. **Profiling** the Data, the library identifies the schema, statistics, entities (PII / NPI) and more. Data Profiles can then be used in downstream applications or reports.
 
@@ -30,6 +39,8 @@ For API documentation, visit the [documentation page](https://capitalone.github.
 
 If you have suggestions or find a bug, [please open an issue](https://github.com/capitalone/dataprofiler/issues/new/choose).
 
+If you want to contribute, visit the [contributing page](https://github.com/capitalone/dataprofiler/blob/main/.github/CONTRIBUTING.md).
+
 ------------------
 
 # Install
@@ -41,23 +52,6 @@ If you want to install the ml dependencies without generating reports use `DataP
 If the ML requirements are too strict (say, you don't want to install tensorflow), you can install a slimmer package with `DataProfiler[reports]`. The slimmer package disables the default sensitive data detection / entity recognition (labler)
 
 Install from pypi: `pip install DataProfiler`
-
-
-# Contribute
-If you want to install the dependencies for developing and updating the code base, be sure to run `pip install -r requirements-dev.txt`
-
-## Pre-Commit
-To install `pre-commit` hooks, run the following commands:
-
-```cli
-pre-commit install
-pre-commit run
-```
-
-If you want to run the `pre-commit` fresh over over all the files, run the following:
-```cli
-pre-commit run --all-files
-```
 
 ------------------
 
@@ -500,9 +494,9 @@ Note that if merged profiles had overlapping integer indices, when null rows are
 
 ### Profiler Differences
 For finding the change between profiles with the same schema we can utilize the
-profile's `diff` function. The diff will provide overall file and sampling
+profile's `diff` function. The `diff` will provide overall file and sampling
 differences as well as detailed differences of the data's statistics. For
-example, numerical columns have a t-test applied to evaluate similarity.
+example, numerical columns have both t-test to evaluate similarity and PSI (Population Stability Index) to quantify column distribution shift.
 More information is described in the Profiler section of the [Github Pages](
 https://capitalone.github.io/DataProfiler/).
 

@@ -1,19 +1,25 @@
 """Contains class for for profiling data labeler col."""
+from __future__ import annotations
+
 import operator
+from typing import Dict, cast
 
 import numpy as np
+from pandas import DataFrame, Series
 
+from ..labelers.base_data_labeler import BaseDataLabeler
 from ..labelers.data_labelers import DataLabeler
-from . import BaseColumnProfiler, utils
+from . import profiler_utils
+from .base_column_profilers import BaseColumnProfiler
 from .profiler_options import DataLabelerOptions
 
 
-class DataLabelerColumn(BaseColumnProfiler):
+class DataLabelerColumn(BaseColumnProfiler["DataLabelerColumn"]):
     """Sublass of BaseColumnProfiler for profiling data labeler col."""
 
     type = "data_labeler"
 
-    def __init__(self, name, options=None):
+    def __init__(self, name: str | None, options: DataLabelerOptions = None) -> None:
         """
         Initialize Data Label profiling for structured datasets.
 
@@ -34,7 +40,7 @@ class DataLabelerColumn(BaseColumnProfiler):
             if options.max_sample_size:
                 self._max_sample_size = options.max_sample_size
 
-        self.data_labeler = None
+        self.data_labeler: BaseDataLabeler = None  # type: ignore[assignment]
         if options and options.data_labeler_object:
             self.data_labeler = options.data_labeler_object
         if self.data_labeler is None:
@@ -48,27 +54,29 @@ class DataLabelerColumn(BaseColumnProfiler):
                 load_options=None,
             )
 
-        self._reverse_label_mapping = None
-        self._possible_data_labels = None
-        self._rank_distribution = None
-        self._sum_predictions = None
+        self._reverse_label_mapping: dict | None = None
+        self._possible_data_labels: list[str] | None = None
+        self._rank_distribution: dict[str, int] = None  # type: ignore[assignment]
+        self._sum_predictions: np.ndarray = None  # type: ignore[assignment]
 
         # rank distribution variables
-        self._top_k_voting = 1
-        self._min_voting_prob = 0.20
+        self._top_k_voting: int = 1
+        self._min_voting_prob: float = 0.20
 
         # data label prediction variables
-        self._min_prob_differential = 0.20
-        self._top_k_labels = 3
-        self._min_top_label_prob = 0.35
+        self._min_prob_differential: float = 0.20
+        self._top_k_labels: int = 3
+        self._min_top_label_prob: float = 0.35
 
-        self.__calculations = {}
+        self.__calculations: dict = {}
         self._filter_properties_w_options(self.__calculations, options)
 
         self.thread_safe = False
 
     @staticmethod
-    def assert_equal_conditions(data_labeler, data_labeler2):
+    def assert_equal_conditions(
+        data_labeler: DataLabelerColumn, data_labeler2: DataLabelerColumn
+    ) -> None:
         """
         Ensure data labelers have the same values. Raise error otherwise.
 
@@ -120,7 +128,7 @@ class DataLabelerColumn(BaseColumnProfiler):
                 "DataLabeler2 have different Models for labeling."
             )
 
-    def __add__(self, other):
+    def __add__(self, other: DataLabelerColumn) -> DataLabelerColumn:
         """
         Merge the properties of two DataLabelerColumn profiles.
 
@@ -167,23 +175,26 @@ class DataLabelerColumn(BaseColumnProfiler):
         merged_profile._max_sample_size = self._max_sample_size
         merged_profile._top_k_voting = self._top_k_voting
 
-        # Combine rank distribution
-        merged_profile._rank_distribution = {
-            key: self._rank_distribution.get(key, 0)
-            + other._rank_distribution.get(key, 0)
-            for key in set(self._rank_distribution) | set(other._rank_distribution)
-        }
-
-        # Combine Sum Predictions
-        merged_profile._sum_predictions = self._sum_predictions + other._sum_predictions
-
         self._merge_calculations(
             merged_profile.__calculations, self.__calculations, other.__calculations
         )
+
+        # Combine rank distribution
+        if self.sample_size or other.sample_size:
+            merged_profile._rank_distribution = {
+                key: self._rank_distribution.get(key, 0)
+                + other._rank_distribution.get(key, 0)
+                for key in set(self._rank_distribution) | set(other._rank_distribution)
+            }
+
+            # Combine Sum Predictions
+            merged_profile._sum_predictions = (
+                self._sum_predictions + other._sum_predictions
+            )
         return merged_profile
 
     @property
-    def reverse_label_mapping(self):
+    def reverse_label_mapping(self) -> dict:
         """Return reverse label mapping."""
         if self._reverse_label_mapping is None:
             self._reverse_label_mapping = self.data_labeler.reverse_label_mapping
@@ -192,7 +203,7 @@ class DataLabelerColumn(BaseColumnProfiler):
         return self._reverse_label_mapping
 
     @property
-    def possible_data_labels(self):
+    def possible_data_labels(self) -> list[str]:
         """Return possible data labels."""
         if self._possible_data_labels is None:
             self._possible_data_labels = list(self.reverse_label_mapping.values())
@@ -205,16 +216,14 @@ class DataLabelerColumn(BaseColumnProfiler):
         return self._possible_data_labels
 
     @property
-    def rank_distribution(self):
+    def rank_distribution(self) -> dict[str, int]:
         """Return rank distribution."""
         if self._rank_distribution is None:
-            self._rank_distribution = dict(
-                [(key, 0) for key in self.possible_data_labels]
-            )
+            self._rank_distribution = {key: 0 for key in self.possible_data_labels}
         return self._rank_distribution
 
     @property
-    def sum_predictions(self):
+    def sum_predictions(self) -> np.ndarray:
         """Sum predictions."""
         if self._sum_predictions is None:
             num_labels = self.data_labeler.model.num_labels
@@ -224,12 +233,12 @@ class DataLabelerColumn(BaseColumnProfiler):
         return self._sum_predictions
 
     @sum_predictions.setter
-    def sum_predictions(self, value):
+    def sum_predictions(self, value: np.ndarray) -> None:
         """Update sum predictions."""
         self._sum_predictions = value
 
     @property
-    def data_label(self):
+    def data_label(self) -> str | None:
         """
         Return data labels which best fit data it has seen based on DataLabeler used.
 
@@ -255,12 +264,12 @@ class DataLabelerColumn(BaseColumnProfiler):
             map(operator.itemgetter(0), ordered_top_k_rank[is_value_close])
         )
         top_label = ordered_top_k_rank[0][0]
-        if self.label_representation[top_label] < self._min_top_label_prob:
+        if cast(Dict, self.label_representation)[top_label] < self._min_top_label_prob:
             return "could not determine"
         return data_label
 
     @property
-    def avg_predictions(self):
+    def avg_predictions(self) -> dict[str, float] | None:
         """Average all sample predictions for each data label."""
         if not self.sample_size:
             return None
@@ -269,7 +278,7 @@ class DataLabelerColumn(BaseColumnProfiler):
         return dict(zip(self.possible_data_labels, avg_predictions))
 
     @property
-    def label_representation(self):
+    def label_representation(self) -> dict[str, float] | None:
         """
         Represent label found within the dataset based on ranked voting.
 
@@ -279,14 +288,16 @@ class DataLabelerColumn(BaseColumnProfiler):
         if not self.sample_size:
             return None
 
-        label_representation = dict([(key, 0) for key in self.possible_data_labels])
+        label_representation: dict[str, float] = {
+            key: 0 for key in self.possible_data_labels
+        }
         total_votes = max(1, sum(list(self.rank_distribution.values())))
         for key in label_representation:
             label_representation[key] = self.rank_distribution[key] / total_votes
         return label_representation
 
     @property
-    def profile(self):
+    def profile(self) -> dict:
         """Return the profile of the column."""
         profile = {
             "data_label": self.data_label,
@@ -296,7 +307,44 @@ class DataLabelerColumn(BaseColumnProfiler):
         }
         return profile
 
-    def report(self, remove_disabled_flag=False):
+    @classmethod
+    def load_from_dict(cls, data, config: dict | None = None) -> DataLabelerColumn:
+        """
+        Parse attribute from json dictionary into self.
+
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: DataLabelerColumn
+        """
+        opt = DataLabelerOptions()
+        data_labeler_object = None
+
+        data_labeler_load_attr = data.pop("data_labeler")
+        if data_labeler_load_attr:
+            data_labeler_object = profiler_utils.reload_labeler_from_options_or_get_new(
+                data_labeler_load_attr, config
+            )
+            if data_labeler_object is not None:
+                opt.data_labeler_object = data_labeler_object
+
+        # This is an ambiguous call to super classes.
+        # If load_from_dict is part of both super classes there may be issues
+        profile = super().load_from_dict(data, config={cls.__name__: opt})
+
+        if profile._reverse_label_mapping is not None:
+            profile._reverse_label_mapping = {
+                int(k): v for k, v in profile._reverse_label_mapping.items()
+            }
+        if profile._sum_predictions is not None:
+            profile._sum_predictions = np.array(profile._sum_predictions)
+
+        return profile
+
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """
         Return report.
 
@@ -308,7 +356,7 @@ class DataLabelerColumn(BaseColumnProfiler):
         """
         return self.profile
 
-    def diff(self, other_profile, options=None):
+    def diff(self, other_profile: DataLabelerColumn, options: dict = None) -> dict:
         """
         Generate differences between the orders of two DataLabeler columns.
 
@@ -316,19 +364,28 @@ class DataLabelerColumn(BaseColumnProfiler):
         appropriate output formats
         :rtype: dict
         """
+        # Make sure other_profile's type matches this class
         differences = super().diff(other_profile, options)
 
-        labels = self.data_label.split("|")
+        self_labels = None
+        if self.sample_size:
+            self_labels = cast(str, self.data_label).split("|")
+        other_labels = None
+        if other_profile.sample_size:
+            other_labels = cast(str, other_profile.data_label).split("|")
         avg_preds = self.avg_predictions
         label_rep = self.label_representation
-        other_labels = other_profile.data_label.split("|")
         other_avg_preds = other_profile.avg_predictions
         other_label_rep = other_profile.label_representation
 
         differences = {
-            "data_label": utils.find_diff_of_lists_and_sets(labels, other_labels),
-            "avg_predictions": utils.find_diff_of_dicts(avg_preds, other_avg_preds),
-            "label_representation": utils.find_diff_of_dicts(
+            "data_label": profiler_utils.find_diff_of_lists_and_sets(
+                self_labels, other_labels
+            ),
+            "avg_predictions": profiler_utils.find_diff_of_dicts(
+                avg_preds, other_avg_preds
+            ),
+            "label_representation": profiler_utils.find_diff_of_dicts(
                 label_rep, other_label_rep
             ),
         }
@@ -336,8 +393,11 @@ class DataLabelerColumn(BaseColumnProfiler):
 
     @BaseColumnProfiler._timeit(name="data_labeler_predict")
     def _update_predictions(
-        self, df_series, prev_dependent_properties=None, subset_properties=None
-    ):
+        self,
+        df_series: DataFrame,
+        prev_dependent_properties: dict = None,
+        subset_properties: dict = None,
+    ) -> None:
         """
         Update col profile properties with clean dataset and its known profile.
 
@@ -376,7 +436,7 @@ class DataLabelerColumn(BaseColumnProfiler):
                         self.reverse_label_mapping[value + start_index]
                     ] += (rank_position + 1)
 
-    def _update_helper(self, df_series_clean, profile):
+    def _update_helper(self, df_series_clean: Series, profile: dict) -> None:
         """
         Update the column profile properties.
 
@@ -388,13 +448,14 @@ class DataLabelerColumn(BaseColumnProfiler):
         """
         self._update_column_base_properties(profile)
 
-    def update(self, df_series):
+    def update(self, df_series: Series) -> DataLabelerColumn:
         """
         Update the column profile.
 
         :param df_series: df series
         :type df_series: pandas.core.series.Series
-        :return: None
+        :return: updated DataLabelerColumn
+        :rtype: DataLabelerColumn
         """
         if len(df_series) == 0:
             return self

@@ -1,3 +1,7 @@
+import json
+from unittest import mock
+
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import NumericalOptions
 from dataprofiler.tests.profilers.profiler_options.test_base_inspector_options import (
     TestBaseInspectorOptions,
@@ -48,7 +52,7 @@ class TestNumericalOptions(TestBaseInspectorOptions):
 
         # Enable and Disable Options
         for key in self.keys:
-            skey = "{}.is_enabled".format(key)
+            skey = f"{key}.is_enabled"
             for enabled in [True, False]:
                 options._set_helper({skey: enabled}, "")
                 self.assertEqual(enabled, options.properties[key].is_enabled)
@@ -59,7 +63,7 @@ class TestNumericalOptions(TestBaseInspectorOptions):
 
         # Enable and Disable Options
         for key in self.keys:
-            skey = "{}.is_enabled".format(key)
+            skey = f"{key}.is_enabled"
             for enabled in [True, False]:
                 options.set({skey: enabled})
                 self.assertEqual(enabled, options.properties[key].is_enabled)
@@ -71,8 +75,8 @@ class TestNumericalOptions(TestBaseInspectorOptions):
 
         # Set BooleanOptions' is_enabled to a non-boolean value
         for key in self.keys:
-            skey = "{}.is_enabled".format(key)
-            expected_error = "{}.{}.is_enabled must be a Boolean.".format(optpth, key)
+            skey = f"{key}.is_enabled"
+            expected_error = f"{optpth}.{key}.is_enabled must be a Boolean."
             default_bool = options.properties[key].is_enabled
             options.set({skey: "Hello World"})
             self.assertIn(expected_error, options._validate_helper())
@@ -207,8 +211,8 @@ class TestNumericalOptions(TestBaseInspectorOptions):
 
         # Set BooleanOptions' is_enabled to a non-boolean value
         for key in self.keys:
-            skey = "{}.is_enabled".format(key)
-            expected_error = "{}.{}.is_enabled must be a Boolean.".format(optpth, key)
+            skey = f"{key}.is_enabled"
+            expected_error = f"{optpth}.{key}.is_enabled must be a Boolean."
             default_bool = options.properties[key].is_enabled
             options.set({skey: "Hello World"})
             with self.assertRaisesRegex(ValueError, expected_error):
@@ -335,12 +339,12 @@ class TestNumericalOptions(TestBaseInspectorOptions):
         options = self.get_options()
 
         # Disable All Numeric Stats
-        options.set({"{}.is_enabled".format(key): False for key in self.numeric_keys})
+        options.set({f"{key}.is_enabled": False for key in self.numeric_keys})
         self.assertFalse(options.is_numeric_stats_enabled)
 
         # Enable Only One Numeric Stat
         for key in self.numeric_keys:
-            skey = "{}.is_enabled".format(key)
+            skey = f"{key}.is_enabled"
             options.set({skey: True})
             self.assertTrue(options.is_numeric_stats_enabled)
             options.set({skey: False})
@@ -364,3 +368,69 @@ class TestNumericalOptions(TestBaseInspectorOptions):
         self.assertNotEqual(options, options2)
         options2.min.is_enabled = False
         self.assertEqual(options, options2)
+
+    def test_json_encode(self):
+        option = NumericalOptions()
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "NumericalOptions",
+            "data": {
+                "min": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "max": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "mode": {
+                    "class": "ModeOption",
+                    "data": mock.ANY,
+                },
+                "median": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "sum": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "variance": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "skewness": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "kurtosis": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "median_abs_deviation": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "num_zeros": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "num_negatives": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "histogram_and_quantiles": {
+                    "class": "HistogramAndQuantilesOption",
+                    "data": mock.ANY,
+                },
+                "bias_correction": {
+                    "class": "BooleanOption",
+                    "data": {"is_enabled": True},
+                },
+                "is_enabled": True,
+            },
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))

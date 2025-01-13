@@ -1,10 +1,12 @@
 """Contains factory class reading various kinds of data."""
-from __future__ import absolute_import, division
+
+from io import BytesIO
+from typing import Any, Dict, List, Optional, Union
 
 from .. import dp_logging
 from .avro_data import AVROData
 from .csv_data import CSVData
-from .data_utils import is_valid_url, url_to_bytes
+from .data_utils import S3Helper, is_valid_url, url_to_bytes
 from .graph_data import GraphData
 from .json_data import JSONData
 from .parquet_data import ParquetData
@@ -13,10 +15,10 @@ from .text_data import TextData
 logger = dp_logging.get_child_logger(__name__)
 
 
-class Data(object):
+class Data:
     """Factory class for reading various kinds of data."""
 
-    data_classes = [
+    data_classes: List[Dict] = [
         dict(data_class=JSONData, kwargs=dict()),
         dict(data_class=GraphData, kwargs=dict()),
         dict(data_class=CSVData, kwargs=dict()),
@@ -25,7 +27,13 @@ class Data(object):
         dict(data_class=TextData, kwargs=dict()),
     ]
 
-    def __new__(cls, input_file_path=None, data=None, data_type=None, options=None):
+    def __new__(
+        cls,
+        input_file_path: Optional[Union[str, BytesIO]] = None,
+        data: Optional[Any] = None,
+        data_type: Optional[str] = None,
+        options: Optional[Dict] = None,
+    ):
         """
         Create Factory Data object.
 
@@ -57,7 +65,14 @@ class Data(object):
             options = dict()
 
         if is_valid_url(input_file_path):
-            input_file_path = url_to_bytes(input_file_path, options)
+            if S3Helper.is_s3_uri(input_file_path, logger=logger):
+                storage_options = options.pop("storage_options", {})
+                s3 = S3Helper.create_s3_client(**storage_options)
+                input_file_path = S3Helper.get_s3_uri(
+                    s3_uri=input_file_path, s3_client=s3
+                )
+            else:
+                input_file_path = url_to_bytes(input_file_path, options)
 
         for data_class_info in cls.data_classes:
             data_class = data_class_info["data_class"]

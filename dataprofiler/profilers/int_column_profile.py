@@ -1,12 +1,17 @@
 """Int profile analysis for individual col within structured profiling."""
+from __future__ import annotations
+
 import numpy as np
+import pandas as pd
 
 from .base_column_profilers import BaseColumnPrimitiveTypeProfiler, BaseColumnProfiler
 from .numerical_column_stats import NumericStatsMixin
 from .profiler_options import IntOptions
 
 
-class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
+class IntColumn(
+    NumericStatsMixin["IntColumn"], BaseColumnPrimitiveTypeProfiler["IntColumn"]
+):
     """
     Integer column profile mixin with of numerical stats.
 
@@ -15,7 +20,7 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
 
     type = "int"
 
-    def __init__(self, name, options=None):
+    def __init__(self, name: str | None, options: IntOptions = None) -> None:
         """
         Initialize column base properties and itself.
 
@@ -30,10 +35,10 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
             )
         NumericStatsMixin.__init__(self, options)
         BaseColumnPrimitiveTypeProfiler.__init__(self, name)
-        self.__calculations = {}
+        self.__calculations: dict = {}
         self._filter_properties_w_options(self.__calculations, options)
 
-    def __add__(self, other):
+    def __add__(self, other: IntColumn) -> IntColumn:
         """
         Merge the properties of two IntColumn profiles.
 
@@ -57,7 +62,7 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         )
         return merged_profile
 
-    def report(self, remove_disabled_flag=False):
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """
         Return the report.
 
@@ -67,8 +72,27 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         """
         return self.profile
 
+    @classmethod
+    def load_from_dict(cls, data, config: dict | None = None):
+        """
+        Parse attribute from json dictionary into self.
+
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: IntColumn
+        """
+        # This is an ambiguous call to super classes.
+        # If load_from_dict is part of both super classes there may be issues
+        profile = super().load_from_dict(data)
+        profile._reformat_numeric_stats_types_on_serialized_profiles()
+        return profile
+
     @property
-    def profile(self):
+    def profile(self) -> dict:
         """
         Return the profile of the column.
 
@@ -77,7 +101,7 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         return NumericStatsMixin.profile(self)
 
     @property
-    def data_type_ratio(self):
+    def data_type_ratio(self) -> float | None:
         """
         Calculate the ratio of samples which match this data type.
 
@@ -89,7 +113,7 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         return None
 
     @classmethod
-    def _is_each_row_int(cls, df_series):
+    def _is_each_row_int(cls, df_series: pd.Series) -> list[bool]:
         """
         Return true if given is numerical and int values.
 
@@ -110,7 +134,7 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
 
         return [NumericStatsMixin.is_int(x) for x in df_series]
 
-    def _update_helper(self, df_series_clean, profile):
+    def _update_helper(self, df_series_clean: pd.Series, profile: dict) -> None:
         """
         Update col profile properties with clean dataset and its known null params.
 
@@ -124,13 +148,14 @@ class IntColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
             NumericStatsMixin._update_helper(self, df_series_clean, profile)
         self._update_column_base_properties(profile)
 
-    def update(self, df_series):
+    def update(self, df_series: pd.Series) -> IntColumn:
         """
         Update the column profile.
 
         :param df_series: df series
         :type df_series: pandas.core.series.Series
-        :return: None
+        :return: updated IntColumn
+        :rtype: IntColumn
         """
         if len(df_series) == 0:
             return self

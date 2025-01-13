@@ -1,19 +1,23 @@
 #!/usr/bin/env python
 """Contains parent column profiler class."""
 
-from __future__ import division, print_function
+from __future__ import annotations
 
 import abc
 import warnings
 from collections import defaultdict
+from typing import Any, Callable, Generic, TypeVar
 
 import numpy as np
-from future.utils import with_metaclass
+import pandas as pd
 
-from . import utils
+from . import profiler_utils
+from .profiler_options import BaseInspectorOptions, BaseOption
+
+BaseColumnProfilerT = TypeVar("BaseColumnProfilerT", bound="BaseColumnProfiler")
 
 
-class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
+class BaseColumnProfiler(Generic[BaseColumnProfilerT], metaclass=abc.ABCMeta):
     """Abstract class for profiling a column of data."""
 
     col_type = None
@@ -25,22 +29,23 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
     _SAMPLING_RATIO = 0.20
     _MIN_SAMPLING_COUNT = 500
 
-    def __init__(self, name):
+    def __init__(self, name: str | None, options: BaseOption | None = None):
         """
         Initialize base class properties for the subclass.
 
         :param name: Name of the dataset
         :type name: String
         """
-        self.name = name
+        self.name: str | None = name
         self.col_index = np.nan
-        self.sample_size = 0
-        self.metadata = dict()
-        self.times = defaultdict(float)
-        self.thread_safe = True
+        self.sample_size: int = 0
+        self.metadata: dict = dict()
+        self.times: dict = defaultdict(float)
+        self.thread_safe: bool = True
 
+    # TODO: Not needed for data labeling
     @staticmethod
-    def _combine_unique_sets(a, b):  # TODO: Not needed for data labeling
+    def _combine_unique_sets(a: list, b: list) -> list:
         """
         Unify two lists.
 
@@ -48,20 +53,19 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         :type b: list
         :rtype: list
         """
-        combined_list = None
+        combined_list: set = set()
         if not a and not b:
-            combined_list = list()
+            combined_list = set()
         elif not a:
             combined_list = set(b)
         elif not b:
             combined_list = set(a)
         else:
             combined_list = set().union(a, b)
-        combined_list = list(combined_list)
-        return combined_list
+        return list(combined_list)
 
     @staticmethod
-    def _timeit(method=None, name=None):
+    def _timeit(method: Callable = None, name: str = None) -> Callable:
         """
         Measure execution time of provided method.
 
@@ -72,10 +76,12 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         :param name: key argument for the times dictionary
         :type name: str
         """
-        return utils.method_timeit(method, name)
+        return profiler_utils.method_timeit(method, name)
 
     @staticmethod
-    def _filter_properties_w_options(calculations, options):
+    def _filter_properties_w_options(
+        calculations: dict, options: BaseInspectorOptions | None
+    ) -> None:
         """
         Cycle through the calculations and turns off the ones that are disabled.
 
@@ -89,8 +95,12 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
                 del calculations[prop]
 
     def _perform_property_calcs(
-        self, calculations, df_series, prev_dependent_properties, subset_properties
-    ):
+        self,
+        calculations: dict,
+        df_series: pd.DataFrame,
+        prev_dependent_properties: dict,
+        subset_properties: dict,
+    ) -> None:
         """
         Cycle through the properties of the columns and calculate them.
 
@@ -112,7 +122,9 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
             )
 
     @staticmethod
-    def _merge_calculations(merged_profile_calcs, profile1_calcs, profile2_calcs):
+    def _merge_calculations(
+        merged_profile_calcs: dict, profile1_calcs: dict, profile2_calcs: dict
+    ) -> None:
         """
         Merge the calculations of two profiles to the lowest common denominator.
 
@@ -135,7 +147,9 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
                         RuntimeWarning,
                     )
 
-    def _add_helper(self, other1, other2):
+    def _add_helper(
+        self, other1: BaseColumnProfilerT, other2: BaseColumnProfilerT
+    ) -> None:
         """
         Merge the properties of two BaseColumnProfile objects.
 
@@ -157,15 +171,13 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         if other1.name == other2.name:
             self.name = other1.name
         else:
-            raise ValueError(
-                "Column names unmatched: {} != {}".format(other1.name, other2.name)
-            )
+            raise ValueError(f"Column names unmatched: {other1.name} != {other2.name}")
 
-        self.times = utils.add_nested_dictionaries(other1.times, other2.times)
+        self.times = profiler_utils.add_nested_dictionaries(other1.times, other2.times)
 
         self.sample_size = other1.sample_size + other2.sample_size
 
-    def diff(self, other_profile, options=None):
+    def diff(self, other_profile: BaseColumnProfilerT, options: dict = None) -> dict:
         """
         Find the differences for columns.
 
@@ -182,7 +194,7 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
             )
         return {}
 
-    def _update_column_base_properties(self, profile):
+    def _update_column_base_properties(self, profile: dict) -> None:
         """
         Update the base properties with the base schema.
 
@@ -193,7 +205,7 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         self.sample_size += profile.pop("sample_size")
         self.metadata = profile
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: str) -> Any:
         """
         Override for the [] operator to allow access to class properties.
 
@@ -201,16 +213,16 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         integrate with current setup.
         """
         if not hasattr(self, item):
-            raise ValueError("The property '{} does not exist.".format(item))
+            raise ValueError(f"The property '{item} does not exist.")
         return getattr(self, item)
 
     @abc.abstractmethod
-    def _update_helper(self, df_series_clean, profile):
+    def _update_helper(self, df_series_clean: pd.DataFrame, profile: dict) -> None:
         """Help update the profile."""
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def update(self, df_series):
+    def update(self, df_series: pd.DataFrame) -> BaseColumnProfiler:
         """
         Update the profile.
 
@@ -221,12 +233,12 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
 
     @property
     @abc.abstractmethod
-    def profile(self):
+    def profile(self) -> dict:
         """Return the profile of the column."""
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def report(self, remove_disabled_flag=False):
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """
         Return report.
 
@@ -236,11 +248,57 @@ class BaseColumnProfiler(with_metaclass(abc.ABCMeta, object)):
         """
         raise NotImplementedError()
 
+    @classmethod
+    def load_from_dict(
+        cls: type[BaseColumnProfilerT],
+        data: dict[str, Any],
+        config: dict | None = None,
+    ) -> BaseColumnProfilerT:
+        """
+        Parse attribute from json dictionary into self.
 
-class BaseColumnPrimitiveTypeProfiler(with_metaclass(abc.ABCMeta, BaseColumnProfiler)):
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: BaseColumnProfiler
+        """
+        if config is None:
+            config = {}
+
+        class_options = config.get(cls.__name__)
+        profile: BaseColumnProfilerT = cls(data["name"], class_options)
+
+        time_vals = data.pop("times")
+        setattr(profile, "times", defaultdict(float, time_vals))
+
+        for attr, value in data.items():
+            if "__calculations" in attr:
+                for metric, function in value.items():
+                    if not hasattr(profile, function):
+                        raise AttributeError(
+                            f"Object {type(profile)} has no attribute {function}."
+                        )
+                    value[metric] = getattr(profile, function).__func__
+            setattr(profile, attr, value)
+
+        return profile
+
+
+BaseColumnPrimitiveTypeProfilerT = TypeVar(
+    "BaseColumnPrimitiveTypeProfilerT", bound="BaseColumnPrimitiveTypeProfiler"
+)
+
+
+class BaseColumnPrimitiveTypeProfiler(
+    BaseColumnProfiler[BaseColumnPrimitiveTypeProfilerT],
+    metaclass=abc.ABCMeta,
+):
     """Abstract class for profiling primative data type for col of data."""
 
-    def __init__(self, name):
+    def __init__(self, name: str | None) -> None:
         """
         Initialize base class properties for the subclass.
 
@@ -250,9 +308,10 @@ class BaseColumnPrimitiveTypeProfiler(with_metaclass(abc.ABCMeta, BaseColumnProf
         BaseColumnProfiler.__init__(self, name)
         # Number of values that match the column type. eg. how many floats match
         # in the float column
-        self.match_count = 0
+        self.match_count: int = 0
+        self.sample_size: int  # inherited from BaseColumnProfiler
 
-    def _update_column_base_properties(self, profile):
+    def _update_column_base_properties(self, profile: dict) -> None:
         """
         Update the base properties with the base schema.
 
@@ -260,10 +319,14 @@ class BaseColumnPrimitiveTypeProfiler(with_metaclass(abc.ABCMeta, BaseColumnProf
         :type profile: base data profile dict
         :return: None
         """
-        self.match_count += profile.pop("match_count")
+        self.match_count += int(profile.pop("match_count"))
         BaseColumnProfiler._update_column_base_properties(self, profile)
 
-    def _add_helper(self, other1, other2):
+    def _add_helper(
+        self,
+        other1: BaseColumnPrimitiveTypeProfilerT,
+        other2: BaseColumnPrimitiveTypeProfilerT,
+    ) -> None:
         """
         Merge the properties of two objects inputted.
 
@@ -272,5 +335,5 @@ class BaseColumnPrimitiveTypeProfiler(with_metaclass(abc.ABCMeta, BaseColumnProf
         :type other1: BaseColumnPrimitiveTypeProfiler
         :type other2: BaseColumnPrimitiveTypeProfiler
         """
-        BaseColumnProfiler._add_helper(self, other1, other2)
+        super()._add_helper(other1, other2)
         self.match_count = other1.match_count + other2.match_count

@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 import os
 import unittest
 from io import BytesIO, StringIO
@@ -12,11 +10,12 @@ test_root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 class TestNestedJSON(unittest.TestCase):
     def test_flat_to_nested_json(self):
-        dic = {"a.b": "ab", "a.c": "ac", "a.d.f": "adf", "b": "b"}
+        dic = {"a.b": "ab", "a.c": "ac", "a.d.f": "adf", "b": "b", 1: 3}
 
         converted_dic = json_data.JSONData._convert_flat_to_nested_cols(dic)
         self.assertTrue(
-            converted_dic == {"a": {"b": "ab", "c": "ac", "d": {"f": "adf"}}, "b": "b"}
+            converted_dic
+            == {"a": {"b": "ab", "c": "ac", "d": {"f": "adf"}}, "b": "b", 1: 3}
         )
 
 
@@ -56,13 +55,18 @@ class TestJSONDataClass(unittest.TestCase):
                 encoding="utf-8",
                 count=14,
             ),
+            dict(
+                path=os.path.join(test_dir, "json/simple-list.json"),
+                encoding="utf-8",
+                count=3,
+            ),
         ]
 
         cls.buffer_list = []
         for input_file in cls.input_file_names:
             # add StringIO
             buffer_info = input_file.copy()
-            with open(input_file["path"], "r", encoding=input_file["encoding"]) as fp:
+            with open(input_file["path"], encoding=input_file["encoding"]) as fp:
                 buffer_info["path"] = StringIO(fp.read())
             cls.buffer_list.append(buffer_info)
 

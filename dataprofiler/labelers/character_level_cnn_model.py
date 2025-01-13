@@ -1,4 +1,6 @@
 """Contains classes for char data labeling."""
+from __future__ import annotations
+
 import copy
 import json
 import os
@@ -10,6 +12,8 @@ import numpy as np
 import tensorflow as tf
 from sklearn import decomposition
 
+from dataprofiler._typing import DataArray
+
 from .. import dp_logging
 from . import labeler_utils
 from .base_model import AutoSubRegistrationMeta, BaseModel, BaseTrainableModel
@@ -20,7 +24,7 @@ logger = dp_logging.get_child_logger(__name__)
 labeler_utils.hide_tf_logger_warnings()
 
 
-def build_embd_dictionary(filename):
+def build_embd_dictionary(filename: str) -> dict[str, np.ndarray]:
     """
     Return a numpy embedding dictionary from embed file with GloVe-like format.
 
@@ -28,15 +32,15 @@ def build_embd_dictionary(filename):
     :type filename: str
     """
     embd_table = dict()
-    with open(filename, "r") as embds:
+    with open(filename) as embds:
         for line in embds:
-            line = line.strip().split()
+            line = line.strip().split()  # type: ignore[assignment]
             embd_table[line[0]] = np.asarray(line[1:])
 
     return embd_table
 
 
-def create_glove_char(n_dims, source_file=None):
+def create_glove_char(n_dims: int, source_file: str = None) -> None:
     """
     Embed GloVe chars embeddings from source file to n_dims principal components.
 
@@ -51,30 +55,159 @@ def create_glove_char(n_dims, source_file=None):
         source_file = os.path.join(_file_dir, "embeddings/glove.840B.300d-char.txt")
     # get embedding table first and vectors as array
     embd_table = build_embd_dictionary(source_file)
-    embd_words, embd_matrix = [
-        np.asarray(ls) if i > 0 else list(ls)
+    embd_words: list[str]
+    embd_matrix: list[np.ndarray]
+    embd_words, embd_matrix = (  # type: ignore
+        np.asarray(ls) if i > 0 else list(ls)  # type: ignore
         for i, ls in enumerate(zip(*embd_table.items()))
-    ]
+    )
 
     # get PCA embedder
     pca = decomposition.PCA(n_components=n_dims)
-    reduced_embds = pca.fit_transform(embd_matrix)
+    reduced_embds: np.ndarray = pca.fit_transform(embd_matrix)
 
     # write to file
     dir_name = os.path.dirname(source_file)
-    embd_file_name = os.path.join(dir_name, "glove-reduced-{}D.txt".format(n_dims))
+    embd_file_name = os.path.join(dir_name, f"glove-reduced-{n_dims}D.txt")
     with open(embd_file_name, "w") as file:
         for word, embd in zip(embd_words, reduced_embds):
             file.write(word + " " + " ".join(str(num) for num in embd) + "\n")
+
+
+@tf.keras.utils.register_keras_serializable(package="CharacterLevelCnnModel")
+class ThreshArgMaxLayer(tf.keras.layers.Layer):
+    """Keras layer applying a thresholded argmax."""
+
+    def __init__(
+        self, threshold_: float, num_labels_: int, default_ind: int = 1, *args, **kwargs
+    ) -> None:
+        """Apply a minimum threshold to the argmax value.
+
+        When below this threshold the index will be the default.
+
+        :param num_labels: number of entities
+        :type num_labels: int
+        :param threshold: default set to 0 so all confidences pass.
+        :type threshold: float
+        :param default_ind: default index
+        :type default_ind: int
+        :return: final argmax threshold layer for the model
+        :return : tensor containing argmax thresholded integers, labels out
+        :rtype: tf.Tensor
+        """
+        super().__init__(*args, **kwargs)
+        self._threshold_ = threshold_
+        self._num_labels_ = num_labels_
+        self._default_ind = default_ind
+        thresh_init = tf.constant_initializer(threshold_)
+        self.thresh_vec = tf.Variable(
+            name="ThreshVec",
+            initial_value=thresh_init(shape=[num_labels_]),
+            trainable=False,
+        )
+
+    def get_config(self):
+        """Return a serializable config for saving the layer."""
+        config = super().get_config().copy()
+        config.update(
+            {
+                "threshold_": self._threshold_,
+                "num_labels_": self._num_labels_,
+                "default_ind": self._default_ind,
+            }
+        )
+        return config
+
+    def call(self, argmax_layer: tf.Tensor, confidence_layer: tf.Tensor) -> tf.Tensor:
+        """Apply the threshold argmax to the input tensor."""
+        threshold_at_argmax = tf.gather(self.thresh_vec, argmax_layer)
+
+        confidence_max_layer = tf.keras.backend.max(confidence_layer, axis=2)
+
+        # Check if the confidences meet the threshold minimum.
+        argmax_mask = tf.keras.backend.cast(
+            tf.keras.backend.greater_equal(confidence_max_layer, threshold_at_argmax),
+            dtype=argmax_layer.dtype,
+        )
+
+        # Create a vector the same size as the batch_size which
+        # represents the background label
+        bg_label_tf = tf.keras.backend.constant(
+            self._default_ind, dtype=argmax_layer.dtype
+        )
+
+        # Generate the final predicted output using the function:
+        final_predicted_layer = tf.add(
+            bg_label_tf,
+            tf.multiply(tf.subtract(argmax_layer, bg_label_tf), argmax_mask),
+            name="ThreshArgMax",
+        )
+        # final_predicted_layer.set_shape(argmax_layer.shape)
+        return final_predicted_layer
+
+
+@tf.keras.utils.register_keras_serializable(package="CharacterLevelCnnModel")
+class EncodingLayer(tf.keras.layers.Layer):
+    """Encodes strings to integers."""
+
+    def __init__(
+        self, max_char_encoding_id: int, max_len: int, *args, **kwargs
+    ) -> None:
+        """
+        Encode characters for the list of sentences.
+
+        :param max_char_encoding_id: Maximum integer value for encoding the
+            input
+        :type max_char_encoding_id: int
+        :param max_len: Maximum char length in a sample
+        :type max_len: int
+        """
+        super().__init__(*args, **kwargs)
+        self.max_char_encoding_id = max_char_encoding_id
+        self.max_len = max_len
+
+    def get_config(self):
+        """Return a serializable config for saving the layer."""
+        config = super().get_config().copy()
+        config.update(
+            {
+                "max_char_encoding_id": self.max_char_encoding_id,
+                "max_len": self.max_len,
+            }
+        )
+        return config
+
+    def call(self, input_str_tensor: tf.Tensor) -> tf.Tensor:
+        """
+        Encode characters for the list of sentences.
+
+        :param input_str_tensor: input list of sentences converted to tensor
+        :type input_str_tensor: tf.tensor
+        :return : tensor containing encoded list of input sentences
+        :rtype: tf.Tensor
+        """
+        # convert characters to indices
+        input_str_flatten = tf.reshape(input_str_tensor, [-1])
+        sentences_encode = tf.strings.unicode_decode(
+            input_str_flatten, input_encoding="UTF-8"
+        )
+        sentences_encode = tf.add(tf.cast(1, tf.int32), sentences_encode)
+        sentences_encode = tf.math.minimum(
+            sentences_encode, self.max_char_encoding_id + 1
+        )
+
+        # padding
+        sentences_encode_pad = sentences_encode.to_tensor(shape=[None, self.max_len])
+        return sentences_encode_pad
 
 
 class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMeta):
     """Class for training char data labeler."""
 
     # boolean if the label mapping requires the mapping for index 0 reserved
-    requires_zero_mapping = True
+    requires_zero_mapping: bool = True
 
-    def __init__(self, label_mapping=None, parameters=None):
+    def __init__(self, label_mapping: dict[str, int], parameters: dict = None) -> None:
         """
         Initialize CNN Model.
 
@@ -109,7 +242,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
 
         BaseModel.__init__(self, label_mapping, parameters)
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         """
         Check if two models are equal with one another.
 
@@ -123,13 +256,14 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         :rtype: bool
         """
         if (
-            self._parameters != other._parameters
+            not isinstance(other, BaseModel)
+            or self._parameters != other._parameters
             or self._label_mapping != other._label_mapping
         ):
             return False
         return True
 
-    def _validate_parameters(self, parameters):
+    def _validate_parameters(self, parameters: dict) -> None:
         """
         Validate the parameters sent in.
 
@@ -209,7 +343,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         if errors:
             raise ValueError("\n".join(errors))
 
-    def set_label_mapping(self, label_mapping):
+    def set_label_mapping(self, label_mapping: list[str] | dict[str, int]) -> None:
         """
         Set the labels for the model.
 
@@ -240,7 +374,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             )
         super().set_label_mapping(label_mapping)
 
-    def _need_to_reconstruct_model(self):
+    def _need_to_reconstruct_model(self) -> bool:
         """
         Determine whether or not the model needs to be reconstructed.
 
@@ -254,7 +388,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             or default_ind != self._model_default_ind
         )
 
-    def save_to_disk(self, dirpath):
+    def save_to_disk(self, dirpath: str) -> None:
         """
         Save whole model to disk with weights.
 
@@ -273,10 +407,10 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         labels_dirpath = os.path.join(dirpath, "label_mapping.json")
         with open(labels_dirpath, "w") as fp:
             json.dump(self.label_mapping, fp)
-        self._model.save(os.path.join(dirpath))
+        self._model.save(os.path.join(dirpath, "model.keras"))
 
     @classmethod
-    def load_from_disk(cls, dirpath):
+    def load_from_disk(cls, dirpath: str) -> CharacterLevelCnnModel:
         """
         Load whole model from disk with weights.
 
@@ -286,23 +420,15 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         """
         # load parameters
         model_param_dirpath = os.path.join(dirpath, "model_parameters.json")
-        with open(model_param_dirpath, "r") as fp:
+        with open(model_param_dirpath) as fp:
             parameters = json.load(fp)
 
         # load label_mapping
         labels_dirpath = os.path.join(dirpath, "label_mapping.json")
-        with open(labels_dirpath, "r") as fp:
+        with open(labels_dirpath) as fp:
             label_mapping = json.load(fp)
 
-        # use f1 score metric
-        custom_objects = {
-            "F1Score": labeler_utils.F1Score(
-                num_classes=max(label_mapping.values()) + 1, average="micro"
-            ),
-            "CharacterLevelCnnModel": cls,
-        }
-        with tf.keras.utils.custom_object_scope(custom_objects):
-            tf_model = tf.keras.models.load_model(dirpath)
+        tf_model = tf.keras.models.load_model(os.path.join(dirpath, "model.keras"))
 
         loaded_model = cls(label_mapping, parameters)
         loaded_model._model = tf_model
@@ -327,34 +453,9 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         return loaded_model
 
     @staticmethod
-    def _char_encoding_layer(input_str_tensor, max_char_encoding_id, max_len):
-        """
-        Encode characters for the list of sentences.
-
-        :param input_str_tensor: input list of sentences converted to tensor
-        :type input_str_tensor: tf.tensor
-        :param max_char_encoding_id: Maximum integer value for encoding the
-            input
-        :type max_char_encoding_id: int
-        :param max_len: Maximum char length in a sample
-        :type max_len: int
-        :return : tensor containing encoded list of input sentences
-        :rtype: tf.Tensor
-        """
-        # convert characters to indices
-        input_str_flatten = tf.reshape(input_str_tensor, [-1])
-        sentences_encode = tf.strings.unicode_decode(
-            input_str_flatten, input_encoding="UTF-8"
-        )
-        sentences_encode = tf.add(tf.cast(1, tf.int32), sentences_encode)
-        sentences_encode = tf.math.minimum(sentences_encode, max_char_encoding_id + 1)
-
-        # padding
-        sentences_encode_pad = sentences_encode.to_tensor(shape=[None, max_len])
-        return sentences_encode_pad
-
-    @staticmethod
-    def _argmax_threshold_layer(num_labels, threshold=0.0, default_ind=1):
+    def _argmax_threshold_layer(
+        num_labels: int, threshold: float = 0.0, default_ind: int = 1
+    ) -> tf.keras.layers.Layer:
         """
         Add an argmax threshold layer to the model.
 
@@ -372,47 +473,9 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         """
         # Initialize the thresholds vector variable and create the threshold
         # matrix.
-        class ThreshArgMaxLayer(tf.keras.layers.Layer):
-            def __init__(self, threshold_, num_labels_):
-                super(ThreshArgMaxLayer, self).__init__()
-                thresh_init = tf.constant_initializer(threshold_)
-                self.thresh_vec = tf.Variable(
-                    name="ThreshVec",
-                    initial_value=thresh_init(shape=[num_labels_]),
-                    trainable=False,
-                )
+        return ThreshArgMaxLayer(threshold, num_labels, default_ind)
 
-            def call(self, argmax_layer, confidence_layer):
-                threshold_at_argmax = tf.gather(self.thresh_vec, argmax_layer)
-
-                confidence_max_layer = tf.keras.backend.max(confidence_layer, axis=2)
-
-                # Check if the confidences meet the threshold minimum.
-                argmax_mask = tf.keras.backend.cast(
-                    tf.keras.backend.greater_equal(
-                        confidence_max_layer, threshold_at_argmax
-                    ),
-                    dtype=argmax_layer.dtype,
-                )
-
-                # Create a vector the same size as the batch_size which
-                # represents the background label
-                bg_label_tf = tf.keras.backend.constant(
-                    default_ind, dtype=argmax_layer.dtype
-                )
-
-                # Generate the final predicted output using the function:
-                final_predicted_layer = tf.add(
-                    bg_label_tf,
-                    tf.multiply(tf.subtract(argmax_layer, bg_label_tf), argmax_mask),
-                    name="ThreshArgMax",
-                )
-
-                return final_predicted_layer
-
-        return ThreshArgMaxLayer(threshold, num_labels)
-
-    def _construct_model(self):
+    def _construct_model(self) -> None:
         """
         Construct model for the data labeler.
 
@@ -436,17 +499,13 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         max_length = self._parameters["max_length"]
         max_char_encoding_id = self._parameters["max_char_encoding_id"]
 
-        # Encoding layer
-        def encoding_function(input_str):
-            char_in_vector = CharacterLevelCnnModel._char_encoding_layer(
-                input_str, max_char_encoding_id, max_length
-            )
-            return char_in_vector
-
         self._model.add(tf.keras.layers.Input(shape=(None,), dtype=tf.string))
 
         self._model.add(
-            tf.keras.layers.Lambda(encoding_function, output_shape=tuple([max_length]))
+            EncodingLayer(
+                max_char_encoding_id=max_char_encoding_id,
+                max_len=max_length,
+            ),
         )
 
         # Create a pre-trained weight matrix
@@ -461,7 +520,6 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         )
         embedding_dict = build_embd_dictionary(embed_file)
 
-        input_shape = tuple([max_length])
         # Fill in the weight matrix: let pad and space be 0s
         for ascii_num in range(max_char_encoding_id):
             if chr(ascii_num) in embedding_dict:
@@ -472,7 +530,6 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
                 max_char_encoding_id + 2,
                 self._parameters["dim_embed"],
                 weights=[embedding_matrix],
-                input_length=input_shape[0],
                 trainable=True,
             )
         )
@@ -489,8 +546,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             )
             if self._parameters["dropout"]:
                 self._model.add(tf.keras.layers.Dropout(self._parameters["dropout"]))
-            # Add batch normalization, set fused = True for compactness
-            self._model.add(tf.keras.layers.BatchNormalization(fused=False, scale=True))
+            self._model.add(tf.keras.layers.BatchNormalization(scale=True))
 
         # Add the fully connected layers
         for size in self._parameters["size_fc"]:
@@ -501,29 +557,35 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         # Add the final Softmax layer
         self._model.add(tf.keras.layers.Dense(num_labels, activation="softmax"))
 
-        # Output the model into a .pb file for TensorFlow
-        argmax_layer = tf.keras.backend.argmax(self._model.output)
+        # Add argmax layer to get labels directly as an output
+        argmax_layer = tf.keras.ops.argmax(self._model.outputs[0], axis=2)
 
         # Create confidence layers
-        final_predicted_layer = CharacterLevelCnnModel._argmax_threshold_layer(
-            num_labels, threshold=0.0, default_ind=default_ind
+        final_predicted_layer = ThreshArgMaxLayer(
+            threshold_=0.0, num_labels_=num_labels, default_ind=default_ind
         )
 
         argmax_outputs = self._model.outputs + [
             argmax_layer,
-            final_predicted_layer(argmax_layer, self._model.output),
+            final_predicted_layer(argmax_layer, self._model.outputs[0]),
         ]
         self._model = tf.keras.Model(self._model.inputs, argmax_outputs)
 
         # Compile the model
-        softmax_output_layer_name = self._model.outputs[0].name.split("/")[0]
+        softmax_output_layer_name = self._model.output_names[0]
         losses = {softmax_output_layer_name: "categorical_crossentropy"}
 
         # use f1 score metric
         f1_score_training = labeler_utils.F1Score(
             num_classes=num_labels, average="micro"
         )
-        metrics = {softmax_output_layer_name: ["acc", f1_score_training]}
+        metrics = {
+            softmax_output_layer_name: [
+                "categorical_crossentropy",
+                "acc",
+                f1_score_training,
+            ]
+        }
 
         self._model.compile(loss=losses, optimizer="adam", metrics=metrics)
 
@@ -531,7 +593,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         self._model_num_labels = num_labels
         self._model_default_ind = default_ind
 
-    def reset_weights(self):
+    def reset_weights(self) -> None:
         """
         Reset the weights of the model.
 
@@ -539,7 +601,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         """
         self._construct_model()
 
-    def _reconstruct_model(self):
+    def _reconstruct_model(self) -> None:
         """
         Reconstruct appropriate layers if number of labels is altered.
 
@@ -551,22 +613,18 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         num_labels = self.num_labels
         default_ind = self.label_mapping[self._parameters["default_label"]]
 
-        # Remove the 3 output layers (dense_2', 'tf_op_layer_ArgMax',
-        #                             'thresh_arg_max_layer')
-        for _ in range(3):
-            self._model.layers.pop()
-
         # Add the final Softmax layer to the previous spot
+        # self._model.layers[-3] to skip: thresh and original softmax
         final_softmax_layer = tf.keras.layers.Dense(
             num_labels, activation="softmax", name="dense_2"
-        )(self._model.layers[-4].output)
+        )(self._model.layers[-3].output)
 
-        # Output the model into a .pb file for TensorFlow
-        argmax_layer = tf.keras.backend.argmax(final_softmax_layer)
+        # Add argmax layer to get labels directly as an output
+        argmax_layer = tf.keras.ops.argmax(final_softmax_layer, axis=2)
 
         # Create confidence layers
-        final_predicted_layer = CharacterLevelCnnModel._argmax_threshold_layer(
-            num_labels, threshold=0.0, default_ind=default_ind
+        final_predicted_layer = ThreshArgMaxLayer(
+            threshold_=0.0, num_labels_=num_labels, default_ind=default_ind
         )
 
         argmax_outputs = [final_softmax_layer] + [
@@ -576,14 +634,20 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         self._model = tf.keras.Model(self._model.inputs, argmax_outputs)
 
         # Compile the model
-        softmax_output_layer_name = self._model.outputs[0].name.split("/")[0]
+        softmax_output_layer_name = self._model.output_names[0]
         losses = {softmax_output_layer_name: "categorical_crossentropy"}
 
         # use f1 score metric
         f1_score_training = labeler_utils.F1Score(
             num_classes=num_labels, average="micro"
         )
-        metrics = {softmax_output_layer_name: ["acc", f1_score_training]}
+        metrics = {
+            softmax_output_layer_name: [
+                "categorical_crossentropy",
+                "acc",
+                f1_score_training,
+            ]
+        }
 
         self._model.compile(loss=losses, optimizer="adam", metrics=metrics)
         self._epoch_id = 0
@@ -592,13 +656,14 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
 
     def fit(
         self,
-        train_data,
-        val_data=None,
-        batch_size=32,
-        label_mapping=None,
-        reset_weights=False,
-        verbose=True,
-    ):
+        train_data: DataArray,
+        val_data: DataArray | None = None,
+        batch_size: int = None,
+        epochs: int = None,
+        label_mapping: dict[str, int] = None,
+        reset_weights: bool = False,
+        verbose: bool = True,
+    ) -> tuple[dict, float | None, dict]:
         """
         Train the current model with the training data and validation data.
 
@@ -615,7 +680,8 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         :type reset_weights: bool
         :param verbose: Flag to determine whether to print status or not
         :type verbose: bool
-        :return: None
+        :return: history, f1, f1_report
+        :rtype: Tuple[dict, float, dict]
         """
         if label_mapping is not None:
             self.set_label_mapping(label_mapping)
@@ -628,12 +694,12 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             if reset_weights:
                 self.reset_weights()
 
-        history = defaultdict()
-        f1 = None
-        f1_report = []
+        history: dict = defaultdict()
+        f1: float | None = None
+        f1_report: dict = {}
 
         self._model.reset_metrics()
-        softmax_output_layer_name = self._model.outputs[0].name.split("/")[0]
+        softmax_output_layer_name = self._model.output_names[0]
 
         start_time = time.time()
         batch_id = 0
@@ -653,7 +719,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             history[metric_label] = model_results[i]
 
         if val_data:
-            f1, f1_report = self._validate_training(val_data)
+            f1, f1_report = self._validate_training(val_data)  # type: ignore
             history["f1_report"] = f1_report
 
             val_f1 = f1_report["weighted avg"]["f1-score"] if f1_report else np.NAN
@@ -680,8 +746,12 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         return history, f1, f1_report
 
     def _validate_training(
-        self, val_data, batch_size_test=32, verbose_log=True, verbose_keras=False
-    ):
+        self,
+        val_data: DataArray,
+        batch_size_test: int = 32,
+        verbose_log: bool = True,
+        verbose_keras: bool = False,
+    ) -> tuple[float, dict] | tuple[None, None]:
         """
         Validate the model on the test set and return the evaluation metrics.
 
@@ -710,7 +780,9 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         for x_val, y_val in val_data:
             y_val_pred.append(
                 self._model.predict(
-                    x_val, batch_size=batch_size_test, verbose=verbose_keras
+                    tf.convert_to_tensor(x_val),
+                    batch_size=batch_size_test,
+                    verbose=verbose_keras,
                 )[1]
             )
             y_val_test.append(np.argmax(y_val, axis=-1))
@@ -733,7 +805,13 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
 
         return f1, f1_report
 
-    def predict(self, data, batch_size=32, show_confidences=False, verbose=True):
+    def predict(
+        self,
+        data: DataArray,
+        batch_size: int = 32,
+        show_confidences: bool = False,
+        verbose: bool = True,
+    ) -> dict:
         """
         Run model and get predictions.
 
@@ -761,7 +839,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
                 "predict."
             )
         # Pre-allocate space for predictions
-        confidences = []
+        confidences: list | np.ndarray = []
         sentence_lengths = np.zeros((batch_size,), dtype=int)
         predictions = np.zeros((batch_size, self._parameters["max_length"]))
         if show_confidences:
@@ -809,8 +887,8 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             allocation_index += num_samples_in_batch
 
         # Convert predictions, confidences to lists from numpy
-        predictions_list = [i for i in range(0, allocation_index)]
-        confidences_list = None
+        predictions_list: list = [i for i in range(0, allocation_index)]
+        confidences_list: list
         if show_confidences:
             confidences_list = [i for i in range(0, allocation_index)]
 
@@ -824,7 +902,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
             return {"pred": predictions_list, "conf": confidences_list}
         return {"pred": predictions_list}
 
-    def details(self):
+    def details(self) -> None:
         """
         Print the relevant details of the model.
 
@@ -834,7 +912,7 @@ class CharacterLevelCnnModel(BaseTrainableModel, metaclass=AutoSubRegistrationMe
         self._model.summary()
         print("\nModel Parameters:")
         for key, value in self._parameters.items():
-            print("{}: {}".format(key, value))
+            print(f"{key}: {value}")
         print("\nModel Label Mapping:")
         for key, value in self.label_mapping.items():
-            print("{}: {}".format(key, value))
+            print(f"{key}: {value}")

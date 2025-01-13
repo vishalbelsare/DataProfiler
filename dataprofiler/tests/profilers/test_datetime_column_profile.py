@@ -1,20 +1,20 @@
-from __future__ import print_function
-
 import datetime
+import json
 import unittest
 import warnings
 from collections import defaultdict
 from unittest import mock
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import six
 
 from dataprofiler.profilers import DateTimeColumn
+from dataprofiler.profilers.json_decoder import load_column_profile
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import DateTimeOptions
 
-from .. import test_utils
-from . import utils
+from . import utils as test_utils
 
 # This is taken from: https://github.com/rlworkgroup/dowel/pull/36/files
 # undo when cpython#4800 is merged.
@@ -23,7 +23,7 @@ unittest.case._AssertWarnsContext.__enter__ = test_utils.patched_assert_warns
 
 class TestDateTimeColumnProfiler(unittest.TestCase):
     def setUp(self):
-        utils.set_seed(seed=0)
+        test_utils.set_seed(seed=0)
 
     @staticmethod
     def _generate_datetime_data(date_format):
@@ -33,7 +33,7 @@ class TestDateTimeColumnProfiler(unittest.TestCase):
             start_date = pd.Timestamp(1950, 7, 14)
             end_date = pd.Timestamp(2020, 7, 14)
 
-            date_sample = utils.generate_random_date_sample(
+            date_sample = test_utils.generate_random_date_sample(
                 start_date, end_date, [date_format]
             )
             gen_data.append(date_sample)
@@ -103,16 +103,16 @@ class TestDateTimeColumnProfiler(unittest.TestCase):
         datetime_profile = DateTimeColumn(df_all.name)
         datetime_profile.update(df_all)
 
-        six.assertCountEqual(self, date_formats_all, set(datetime_profile.date_formats))
+        self.assertCountEqual(date_formats_all, set(datetime_profile.date_formats))
 
         # Test chunks
         datetime_profile = DateTimeColumn(df_1.name)
         datetime_profile.update(df_1)
 
-        six.assertCountEqual(self, date_formats_1, set(datetime_profile.date_formats))
+        self.assertCountEqual(date_formats_1, set(datetime_profile.date_formats))
 
         datetime_profile.update(df_2)
-        six.assertCountEqual(self, date_formats_all, datetime_profile.date_formats)
+        self.assertCountEqual(date_formats_all, datetime_profile.date_formats)
 
     def test_profiled_min(self):
         def date_linspace(start, end, steps):
@@ -432,3 +432,155 @@ class TestDateTimeColumnProfiler(unittest.TestCase):
             str(exc.exception),
             "Unsupported operand type(s) for diff: " "'DateTimeColumn' and 'str'",
         )
+
+    def test_json_encode(self):
+        profile = DateTimeColumn("0")
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        expected = json.dumps(
+            {
+                "class": "DateTimeColumn",
+                "data": {
+                    "name": "0",
+                    "col_index": np.nan,
+                    "sample_size": 0,
+                    "metadata": dict(),
+                    "times": defaultdict(),
+                    "thread_safe": True,
+                    "match_count": 0,
+                    "date_formats": [],
+                    "min": None,
+                    "max": None,
+                    "_dt_obj_min": None,
+                    "_dt_obj_max": None,
+                    "_DateTimeColumn__calculations": dict(),
+                },
+            }
+        )
+
+        self.assertEqual(serialized, expected)
+
+    def test_json_encode_after_update(self):
+        data = [2.5, 12.5, "2013-03-10 15:43:30", 5, "03/10/13 15:43", "Mar 11, 2013"]
+        df = pd.Series(data).apply(str)
+        profiler = DateTimeColumn("0")
+
+        expected_date_formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%b %d, %Y",
+            "%m/%d/%y %H:%M",
+        ]
+        with patch.object(
+            profiler, "_combine_unique_sets", return_value=expected_date_formats
+        ):
+            with patch("time.time", return_value=0.0):
+                profiler.update(df)
+
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+
+        expected = json.dumps(
+            {
+                "class": "DateTimeColumn",
+                "data": {
+                    "name": "0",
+                    "col_index": np.nan,
+                    "sample_size": 6,
+                    "metadata": dict(),
+                    "times": defaultdict(float, {"datetime": 0.0}),
+                    "thread_safe": True,
+                    "match_count": 3,
+                    "date_formats": expected_date_formats,
+                    "min": "03/10/13 15:43",
+                    "max": "Mar 11, 2013",
+                    "_dt_obj_min": "2013-03-10T15:43:00",
+                    "_dt_obj_max": "2013-03-11T00:00:00",
+                    "_DateTimeColumn__calculations": dict(),
+                },
+            }
+        )
+
+        self.assertEqual(serialized, expected)
+
+    def test_json_encode_datetime(self):
+        data = ["1209214"]
+        df = pd.Series(data)
+        profiler = DateTimeColumn("0")
+
+        expected_date_formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%b %d, %Y",
+            "%m/%d/%y %H:%M",
+        ]
+        with patch.object(
+            profiler, "_combine_unique_sets", return_value=expected_date_formats
+        ):
+            with patch("time.time", return_value=0.0):
+                profiler.update(df)
+
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+
+        expected = json.dumps(
+            {
+                "class": "DateTimeColumn",
+                "data": {
+                    "name": "0",
+                    "col_index": np.nan,
+                    "sample_size": 1,
+                    "metadata": {},
+                    "times": defaultdict(float, {"datetime": 0.0}),
+                    "thread_safe": True,
+                    "match_count": 1,
+                    "date_formats": expected_date_formats,
+                    "min": "1209214",
+                    "max": "1209214",
+                    "_dt_obj_min": "9214-01-20T00:00:00",
+                    "_dt_obj_max": "9214-01-20T00:00:00",
+                    "_DateTimeColumn__calculations": dict(),
+                },
+            }
+        )
+
+        self.assertEqual(serialized, expected)
+
+    def test_json_decode(self):
+        fake_profile_name = None
+        expected_profile = DateTimeColumn(fake_profile_name)
+
+        serialized = json.dumps(expected_profile, cls=ProfileEncoder)
+        deserialized = load_column_profile(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, expected_profile)
+
+    def test_json_decode_after_update(self):
+        fake_profile_name = "Fake profile name"
+
+        data = [2.5, 12.5, "2013-03-10 15:43:30", 5, "03/10/13 15:43", "Mar 11, 2013"]
+        df = pd.Series(data)
+
+        expected_profile = DateTimeColumn(fake_profile_name)
+        expected_profile.update(df)
+
+        serialized = json.dumps(expected_profile, cls=ProfileEncoder)
+        deserialized = load_column_profile(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, expected_profile)
+
+        expected_formats = [
+            "%m/%d/%y %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%B %d, %Y",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y%m%dT%H%M%S",
+            "%b %d, %Y",
+        ]
+
+        data_new = ["2012-02-10T15:43:30", "20120210T154300", "March 12, 2014"]
+        df_new = pd.Series(data_new)
+
+        # validating update after deserialization
+        deserialized.update(df_new)
+
+        assert deserialized._dt_obj_min == pd.Timestamp("2012-02-10 15:43:00")
+        assert deserialized._dt_obj_max == pd.Timestamp("2014-03-12 00:00:00")
+
+        assert set(deserialized.date_formats) == set(expected_formats)

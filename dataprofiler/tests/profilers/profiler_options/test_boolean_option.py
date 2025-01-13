@@ -1,10 +1,16 @@
+import json
+
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import BooleanOption
+from dataprofiler.tests.profilers.profiler_options.abstract_test_options import (
+    JSONDecodeTestMixin,
+)
 from dataprofiler.tests.profilers.profiler_options.test_base_option import (
     TestBaseOption,
 )
 
 
-class TestBooleanOption(TestBaseOption):
+class TestBooleanOption(TestBaseOption, JSONDecodeTestMixin):
 
     option_class = BooleanOption
     keys = []
@@ -57,7 +63,7 @@ class TestBooleanOption(TestBaseOption):
 
         # Option is_enabled is not a boolean
         option = self.get_options(is_enabled="Hello World")
-        expected_error = ["{}.is_enabled must be a Boolean.".format(optpth)]
+        expected_error = [f"{optpth}.is_enabled must be a Boolean."]
         self.assertSetEqual(set(expected_error), set(option._validate_helper()))
 
     def test_validate(self):
@@ -69,7 +75,7 @@ class TestBooleanOption(TestBaseOption):
 
         # Option is_enabled is not a boolean
         option = self.get_options(is_enabled="Hello World")
-        expected_error = "{}.is_enabled must be a Boolean.".format(optpth)
+        expected_error = f"{optpth}.is_enabled must be a Boolean."
         with self.assertRaisesRegex(ValueError, expected_error):
             option.validate(raise_error=True)
 
@@ -87,3 +93,15 @@ class TestBooleanOption(TestBaseOption):
         self.assertNotEqual(options, options2)
         options2.is_enabled = False
         self.assertEqual(options, options2)
+
+    def test_json_encode(self):
+        option = self.get_options(is_enabled=False)
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "BooleanOption",
+            "data": {"is_enabled": False},
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))

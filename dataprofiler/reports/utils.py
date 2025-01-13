@@ -1,9 +1,13 @@
 """Contains functions for checking for installations/dependencies."""
 import sys
 import warnings
+from typing import Any, Callable, List, TypeVar, cast
+
+# Generic type for the return of the function "require_module()"
+F = TypeVar("F", bound=Callable[..., Any])
 
 
-def warn_missing_module(graph_func, module_name):
+def warn_missing_module(graph_func: str, module_name: str) -> None:
     """
     Return a warning if a given graph module doesn't exist.
 
@@ -13,15 +17,15 @@ def warn_missing_module(graph_func, module_name):
     :type module_name: str
     """
     warning_msg = "\n\n!!! WARNING Graphing Failure !!!\n\n"
-    warning_msg += "Graph Function: {}".format(graph_func)
-    warning_msg += "\nMissing Module: {}".format(module_name)
+    warning_msg += f"Graph Function: {graph_func}"
+    warning_msg += f"\nMissing Module: {module_name}"
     warning_msg += "\n\nFor report errors, try installing "
     warning_msg += "the extra reports requirements via:\n\n"
     warning_msg += "$ pip install dataprofiler[reports] --user\n\n"
     warnings.warn(warning_msg, RuntimeWarning, stacklevel=3)
 
 
-def require_module(names):
+def require_module(names: List[str]) -> Callable[[F], F]:
     """
     Check if a set of modules exists in sys.modules prior to running function.
 
@@ -32,8 +36,8 @@ def require_module(names):
     :type names: list[str]
     """
 
-    def check_module(f):
-        def new_f(*args, **kwds):
+    def check_module(f: F) -> F:
+        def new_f(*args: Any, **kwds: Any) -> Any:
             for module_name in names:
                 if module_name not in sys.modules.keys():
                     # attempt to reload if missing
@@ -46,6 +50,6 @@ def require_module(names):
             return f(*args, **kwds)
 
         new_f.__name__ = f.__name__
-        return new_f
+        return cast(F, new_f)
 
     return check_module

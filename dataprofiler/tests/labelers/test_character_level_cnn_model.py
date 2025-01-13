@@ -9,7 +9,10 @@ import pandas as pd
 import pkg_resources
 import tensorflow as tf
 
-from dataprofiler.labelers.character_level_cnn_model import CharacterLevelCnnModel
+from dataprofiler.labelers.character_level_cnn_model import (
+    CharacterLevelCnnModel,
+    EncodingLayer,
+)
 
 _file_dir = os.path.dirname(os.path.abspath(__file__))
 _resource_labeler_dir = pkg_resources.resource_filename("resources", "labelers")
@@ -35,11 +38,12 @@ mock_label_mapping = {
 }
 
 
-def mock_open(filename, *args):
+def mock_open(filename, *args, **kwargs):
     if filename.find("model_parameters") >= 0:
         return StringIO(json.dumps(mock_model_parameters))
     elif filename.find("label_mapping") >= 0:
         return StringIO(json.dumps(mock_label_mapping))
+    return StringIO()
 
 
 def setup_save_mock_open(mock_open):
@@ -271,7 +275,7 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
         )
 
         # predict after fitting on just the text
-        cnn_model.predict(data_gen[0][0])
+        cnn_model.predict([data_gen[0][0]])
 
     def test_fit_and_predict_with_new_labels_set_via_method(self):
         # Initialize model
@@ -300,7 +304,7 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
         history, f1, f1_report = cnn_model.fit(data_gen, cv_gen)
 
         # test predict on just the text
-        cnn_model.predict(data_gen[0][0])
+        cnn_model.predict([data_gen[0][0]])
 
     def test_validation(self):
 
@@ -367,9 +371,8 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
         max_char_encoding_id = 127
         max_len = 10
 
-        encode_output = cnn_model._char_encoding_layer(
-            input_str_tensor, max_char_encoding_id, max_len
-        ).numpy()[0]
+        encode_layer = EncodingLayer(max_char_encoding_id, max_len)
+        encode_output = encode_layer.call(input_str_tensor).numpy()[0]
         expected_output = [117, 102, 116, 117, 0, 0, 0, 0, 0, 0]
         self.assertCountEqual(encode_output, expected_output)
 
@@ -391,10 +394,7 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
         self.assertCountEqual(threshold_output, expected_threshold_output)
 
     @mock.patch("tensorflow.keras.Model.save", return_value=None)
-    @mock.patch("tensorflow.keras.models.load_model", return_value=None)
-    @mock.patch(
-        "dataprofiler.labelers.character_level_cnn_model.callable", return_value=True
-    )
+    @mock.patch("tensorflow.keras.models.load_model", return_value=mock.Mock())
     @mock.patch("builtins.open")
     def test_save(self, mock_open, *mocks):
         # setup mock
@@ -430,11 +430,8 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
         StringIO.close(mock_file)
 
     @mock.patch("tensorflow.keras.Model.save", return_value=None)
-    @mock.patch("tensorflow.keras.models.load_model", return_value=None)
+    @mock.patch("tensorflow.keras.models.load_model", return_value=mock.Mock())
     @mock.patch("builtins.open", side_effect=mock_open)
-    @mock.patch(
-        "dataprofiler.labelers.character_level_cnn_model.callable", return_value=True
-    )
     def test_load(self, *mocks):
         dir = os.path.join(_resource_labeler_dir, "unstructured_model/")
         loaded_model = CharacterLevelCnnModel.load_from_disk(dir)
@@ -469,7 +466,6 @@ class TestCharacterLevelCNNModel(unittest.TestCase):
             "dense_1",
             "dropout_5",
             "dense_2",
-            "tf_op_layer_ArgMax",
             "thresh_arg_max_layer",
         ]
         model_layers = [layer.name for layer in cnn_model._model.layers]

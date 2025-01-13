@@ -1,9 +1,15 @@
 #!/usr/bin/env python
 """Build model for dataset by identifying col type along with its respective params."""
-from __future__ import division, print_function
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Callable, cast
+
+if TYPE_CHECKING:
+    import dask.dataframe as dd
+    import pandas as pd
 
 
-def is_in_range(x, config):
+def is_in_range(x: str | int | float, config: dict) -> bool:
     """
     Check to see x is in the range of the config.
 
@@ -14,12 +20,12 @@ def is_in_range(x, config):
     :returns: bool
     """
     try:
-        return config["start"] <= float(x) <= config["end"]
+        return float(config["start"]) <= float(x) <= float(config["end"])
     except Exception:
         raise TypeError("Value is not a float")
 
 
-def is_in_list(x, config):
+def is_in_list(x: str | int | float, config: dict) -> bool:
     """
     Check to see x is in the config list.
 
@@ -35,14 +41,14 @@ def is_in_list(x, config):
 class Validator:
     """For validating a data set."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize Validator object."""
-        self.config = None
-        self.report = None
-        self.validation_run = False
-        self.validation_report = dict()
+        self.config: dict | None = None
+        self.report: dict | None = None
+        self.validation_run: bool = False
+        self.validation_report: dict = dict()
 
-    def validate(self, data, config):
+    def validate(self, data: pd.DataFrame | dd.DataFrame, config: dict) -> None:
         """
         Validate a data set.
 
@@ -97,11 +103,17 @@ class Validator:
 
                 if sub_key not in ["range", "list"]:
                     raise TypeError("Range and list only acceptable key values.")
-                apply_type = is_in_range if sub_key == "range" else is_in_list
+                apply_type: Callable[[str | int | float, dict], bool] = (
+                    is_in_range if sub_key == "range" else is_in_list
+                )
 
                 if df_type == "dask":
-                    temp_results = df_series.apply(
-                        apply_type, meta=(iter_key, "bool"), args=(sub_value,)
+
+                    def apply_with_config(x: Any) -> bool:
+                        return cast(bool, apply_type(x, sub_value))
+
+                    temp_results = df_series.map(
+                        apply_with_config, meta=(iter_key, "bool")
                     )
                     temp_results = temp_results.compute()
                     # Dask evaluates this to be an nd array so we have to
@@ -123,7 +135,7 @@ class Validator:
                 del temp_results
         self.validation_run = True
 
-    def get(self):
+    def get(self) -> dict:
         """Get the results of the validation run."""
         if self.validation_run:
             return self.validation_report

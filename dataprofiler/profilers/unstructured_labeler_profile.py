@@ -1,19 +1,26 @@
 """Profile analysis for applying labels within unstructured profiling."""
+from __future__ import annotations
+
 from collections import defaultdict
 
+from pandas import Series
+
+from ..labelers.base_data_labeler import BaseDataLabeler
 from ..labelers.data_labelers import DataLabeler
 from ..labelers.data_processing import CharPostprocessor
-from . import utils
+from . import profiler_utils
 from .base_column_profilers import BaseColumnProfiler
 from .profiler_options import DataLabelerOptions
 
 
-class UnstructuredLabelerProfile(object):
+class UnstructuredLabelerProfile:
     """Profiles and labels unstructured data."""
 
     type = "data_labeler"
 
-    def __init__(self, data_labeler_dirpath=None, options=None):
+    def __init__(
+        self, data_labeler_dirpath: str = None, options: DataLabelerOptions = None
+    ) -> None:
         """
         Initialize of Data Label profiling for unstructured datasets.
 
@@ -25,7 +32,7 @@ class UnstructuredLabelerProfile(object):
         # initializing a UnstructuredDataLabeler as well as the entity counts
         # statistic:
 
-        self.data_labeler = None
+        self.data_labeler: BaseDataLabeler = None  # type: ignore[assignment]
         if options and options.data_labeler_object:
             self.data_labeler = options.data_labeler_object
         if self.data_labeler is None:
@@ -39,22 +46,22 @@ class UnstructuredLabelerProfile(object):
                 load_options=None,
             )
 
-        self.entity_counts = dict(
+        self.entity_counts: dict = dict(
             word_level=defaultdict(int),
             true_char_level=defaultdict(int),
             postprocess_char_level=defaultdict(int),
         )
-        self.entity_percentages = dict(
+        self.entity_percentages: dict = dict(
             word_level=defaultdict(int),
             true_char_level=defaultdict(int),
             postprocess_char_level=defaultdict(int),
         )
-        self.char_sample_size = 0
-        self.word_sample_size = 0
+        self.char_sample_size: int = 0
+        self.word_sample_size: int = 0
         self.separators = (" ", ",", ";", '"', ":", "\n", "\t", ".", "!", "'")
-        self.times = defaultdict(float)
+        self.times: dict = defaultdict(float)
 
-    def __add__(self, other):
+    def __add__(self, other: UnstructuredLabelerProfile) -> UnstructuredLabelerProfile:
         """
         Merge the properties of two UnstructuredLabelerProfile.
 
@@ -80,20 +87,22 @@ class UnstructuredLabelerProfile(object):
         options.data_labeler_object = self.data_labeler
 
         merged_profile = UnstructuredLabelerProfile(options=options)
-        merged_profile.entity_counts = utils.add_nested_dictionaries(
+        merged_profile.entity_counts = profiler_utils.add_nested_dictionaries(
             self.entity_counts, other.entity_counts
         )
 
         merged_profile.char_sample_size = self.char_sample_size + other.char_sample_size
         merged_profile.word_sample_size = self.word_sample_size + other.word_sample_size
 
-        merged_profile.times = utils.add_nested_dictionaries(self.times, other.times)
+        merged_profile.times = profiler_utils.add_nested_dictionaries(
+            self.times, other.times
+        )
 
         merged_profile._update_percentages()
 
         return merged_profile
 
-    def report(self, remove_disabled_flag=False):
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """
         Return profile object.
 
@@ -103,7 +112,9 @@ class UnstructuredLabelerProfile(object):
         """
         return self.profile
 
-    def diff(self, other_profile, options=None):
+    def diff(
+        self, other_profile: UnstructuredLabelerProfile, options: dict = None
+    ) -> dict:
         """
         Find the differences for two unstructured labeler profiles.
 
@@ -124,10 +135,10 @@ class UnstructuredLabelerProfile(object):
         entity_counts_diff = {}
         entity_percentages_diff = {}
         for key in ["word_level", "true_char_level", "postprocess_char_level"]:
-            entity_percentages_diff[key] = utils.find_diff_of_dicts(
+            entity_percentages_diff[key] = profiler_utils.find_diff_of_dicts(
                 self.entity_percentages[key], other_profile.entity_percentages[key]
             )
-            entity_counts_diff[key] = utils.find_diff_of_dicts(
+            entity_counts_diff[key] = profiler_utils.find_diff_of_dicts(
                 self.entity_counts[key], other_profile.entity_counts[key]
             )
 
@@ -139,12 +150,12 @@ class UnstructuredLabelerProfile(object):
         return differences
 
     @property
-    def label_encoding(self):
+    def label_encoding(self) -> list[str]:
         """Return list of labels."""
         return self.data_labeler.labels
 
     @BaseColumnProfiler._timeit(name="data_labeler_predict")
-    def _update_helper(self, df_series_clean, profile):
+    def _update_helper(self, df_series_clean: Series, profile: dict) -> None:
         """
         Update col profile properties with clean dataset and its known profile.
 
@@ -177,7 +188,7 @@ class UnstructuredLabelerProfile(object):
         # CHARACTERS/WORDS PROCESSED
         self._update_column_base_properties(profile)
 
-    def update(self, df_series):
+    def update(self, df_series: Series) -> None:
         """Update profile."""
         if len(df_series) == 0:
             return
@@ -188,7 +199,7 @@ class UnstructuredLabelerProfile(object):
         self._update_helper(df_series, profile)
 
     @property
-    def profile(self):
+    def profile(self) -> dict:
         """Return a profile."""
         profile = {
             "entity_counts": self.entity_counts,
@@ -197,7 +208,7 @@ class UnstructuredLabelerProfile(object):
         }
         return profile
 
-    def _update_column_base_properties(self, profile):
+    def _update_column_base_properties(self, profile: dict) -> None:
         """
         Update the base properties with the base schema.
 
@@ -207,7 +218,7 @@ class UnstructuredLabelerProfile(object):
         """
         self.metadata = profile
 
-    def _get_percentages(self, level):
+    def _get_percentages(self, level: str) -> dict | None:
         """
         Create a sorted dictionary of each entity percentages.
 
@@ -222,7 +233,7 @@ class UnstructuredLabelerProfile(object):
             and level != "true_char_level"
             and level != "postprocess_char_level"
         ):
-            return
+            return None
         total = self.word_sample_size
         if level == "true_char_level" or level == "postprocess_char_level":
             total = self.char_sample_size
@@ -233,7 +244,7 @@ class UnstructuredLabelerProfile(object):
                 percentages[entity] = self.entity_counts[level][entity] / total
         return percentages
 
-    def _update_percentages(self):
+    def _update_percentages(self) -> None:
         """
         Update each entity percentage.
 
@@ -248,7 +259,7 @@ class UnstructuredLabelerProfile(object):
             "postprocess_char_level"
         )
 
-    def _update_true_char_label_counts(self, predictions):
+    def _update_true_char_label_counts(self, predictions: list) -> None:
         """
         Update the true character label counts.
 
@@ -267,8 +278,8 @@ class UnstructuredLabelerProfile(object):
             self.char_sample_size += len(sample)
 
     def _update_postprocess_char_label_counts(
-        self, df_series_clean, format_predictions
-    ):
+        self, df_series_clean: Series, format_predictions: dict
+    ) -> None:
         """
         Update the postprocess character label counts.
 
@@ -296,7 +307,9 @@ class UnstructuredLabelerProfile(object):
             # Add background from end if there is any
             char_label_counts["UNKNOWN"] += len(text) - index
 
-    def _update_word_label_counts(self, df_series_clean, format_predictions):
+    def _update_word_label_counts(
+        self, df_series_clean: Series, format_predictions: dict
+    ) -> None:
         """
         Update the sorted dictionary of each entity count.
 

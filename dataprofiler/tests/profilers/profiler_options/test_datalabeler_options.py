@@ -1,7 +1,12 @@
+pass
+import json
 from unittest import mock
 
 from dataprofiler.labelers.base_data_labeler import BaseDataLabeler
+from dataprofiler.profilers.json_decoder import load_option
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import DataLabelerOptions
+from dataprofiler.tests.profilers import utils as test_utils
 from dataprofiler.tests.profilers.profiler_options.test_base_inspector_options import (
     TestBaseInspectorOptions,
 )
@@ -52,18 +57,18 @@ class TestDataLabelerOptions(TestBaseInspectorOptions):
         # Test invalid dirpath
         options = self.get_options()
         options.set({"data_labeler_dirpath": 0})
-        expected_error = "{}.data_labeler_dirpath must be a string.".format(optpth)
+        expected_error = f"{optpth}.data_labeler_dirpath must be a string."
         self.assertEqual([expected_error], options._validate_helper())
 
         # Test invalid sample size
         options = self.get_options()
         options.set({"max_sample_size": ""})
-        expected_error = "{}.max_sample_size must be an integer.".format(optpth)
+        expected_error = f"{optpth}.max_sample_size must be an integer."
         self.assertEqual([expected_error], options._validate_helper())
 
         # Test max sample size less than or equal to 0
         options = self.get_options()
-        expected_error = "{}.max_sample_size must be greater than 0.".format(optpth)
+        expected_error = f"{optpth}.max_sample_size must be greater than 0."
         options.set({"max_sample_size": 0})
         self.assertEqual([expected_error], options._validate_helper())
         options.set({"max_sample_size": -1})
@@ -102,7 +107,7 @@ class TestDataLabelerOptions(TestBaseInspectorOptions):
         # Test invalid dirpath
         options = self.get_options()
         options.set({"data_labeler_dirpath": 0})
-        expected_error = "{}.data_labeler_dirpath must be a string.".format(optpth)
+        expected_error = f"{optpth}.data_labeler_dirpath must be a string."
         self.assertEqual([expected_error], options.validate(raise_error=False))
         with self.assertRaisesRegex(ValueError, expected_error):
             options.validate(raise_error=True)
@@ -110,14 +115,14 @@ class TestDataLabelerOptions(TestBaseInspectorOptions):
         # Test invalid sample size
         options = self.get_options()
         options.set({"max_sample_size": ""})
-        expected_error = "{}.max_sample_size must be an integer.".format(optpth)
+        expected_error = f"{optpth}.max_sample_size must be an integer."
         self.assertEqual([expected_error], options.validate(raise_error=False))
         with self.assertRaisesRegex(ValueError, expected_error):
             options.validate(raise_error=True)
 
         # Test max sample size less than or equal to 0
         options = self.get_options()
-        expected_error = "{}.max_sample_size must be greater than 0.".format(optpth)
+        expected_error = f"{optpth}.max_sample_size must be greater than 0."
         options.set({"max_sample_size": 0})
         self.assertEqual([expected_error], options.validate(raise_error=False))
         with self.assertRaisesRegex(ValueError, expected_error):
@@ -168,3 +173,77 @@ class TestDataLabelerOptions(TestBaseInspectorOptions):
         self.assertNotEqual(options, options2)
         options2.data_labeler_object._model = 7
         self.assertEqual(options, options2)
+
+    def test_json_encode(self):
+        option = DataLabelerOptions()
+
+        mock_BaseDataLabeler = mock.Mock(spec=BaseDataLabeler)
+        mock_BaseDataLabeler._default_model_loc = "test_loc"
+        option.data_labeler_object = mock_BaseDataLabeler
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "DataLabelerOptions",
+            "data": {
+                "is_enabled": True,
+                "data_labeler_dirpath": None,
+                "max_sample_size": None,
+                "data_labeler_object": {"from_library": "test_loc"},
+            },
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))
+
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_decode(self, mock_BaseDataLabeler):
+        expected_options = self.get_options()
+
+        serialized = json.dumps(expected_options, cls=ProfileEncoder)
+        deserialized = load_option(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, expected_options)
+
+        # case where labeler exists but no config
+        mock_BaseDataLabeler._default_model_loc = "test_loc"
+        expected_options.data_labeler_object = mock_BaseDataLabeler
+        mock_BaseDataLabeler.load_from_library.return_value = mock_BaseDataLabeler
+        config = {}
+
+        serialized = json.dumps(expected_options, cls=ProfileEncoder)
+        deserialized = load_option(json.loads(serialized), config)
+        test_utils.assert_profiles_equal(deserialized, expected_options)
+
+        expected_config = {
+            "DataLabelerOptions": {"from_library": {"test_loc": mock_BaseDataLabeler}},
+            "DataLabelerColumn": {"from_library": {"test_loc": mock_BaseDataLabeler}},
+        }
+        self.assertDictEqual(expected_config, config)
+
+        mock_BaseDataLabeler.load_from_library.reset_mock()
+        mock_BaseDataLabeler.load_from_library.return_value = None
+        deserialized = load_option(json.loads(serialized), config)
+
+        mock_BaseDataLabeler.load_from_library.assert_not_called()
+        test_utils.assert_profiles_equal(deserialized, expected_options)
+
+        config = {
+            "DataLabelerColumn": {"from_library": {"test_loc": mock_BaseDataLabeler}}
+        }
+        deserialized = load_option(json.loads(serialized), config)
+
+        mock_BaseDataLabeler.load_from_library.assert_not_called()
+        test_utils.assert_profiles_equal(deserialized, expected_options)
+        self.assertDictEqual(expected_config, config)
+
+        config = {
+            "DataLabelerOptions": {"from_library": {"test_loc": mock_BaseDataLabeler}}
+        }
+        deserialized = load_option(json.loads(serialized), config)
+
+        mock_BaseDataLabeler.load_from_library.assert_not_called()
+        test_utils.assert_profiles_equal(deserialized, expected_options)
+        self.assertDictEqual(expected_config, config)

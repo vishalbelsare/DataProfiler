@@ -1,3 +1,6 @@
+import json
+
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import BaseInspectorOptions
 from dataprofiler.tests.profilers.profiler_options.test_boolean_option import (
     TestBooleanOption,
@@ -41,9 +44,21 @@ class TestBaseInspectorOptions(TestBooleanOption):
         self.assertFalse(options.is_prop_enabled("is_enabled"))
 
         # Check is prop enabled for invalid property
-        expected_error = 'Property "Hello World" does not exist in {}.'.format(optpth)
+        expected_error = f'Property "Hello World" does not exist in {optpth}.'
         with self.assertRaisesRegex(AttributeError, expected_error):
             options.is_prop_enabled("Hello World")
 
     def test_eq(self):
         super().test_eq()
+
+    def test_json_encode(self):
+        option = BaseInspectorOptions(is_enabled=False)
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "BaseInspectorOptions",
+            "data": {"is_enabled": False},
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))

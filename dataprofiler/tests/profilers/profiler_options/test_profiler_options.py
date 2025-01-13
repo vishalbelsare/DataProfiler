@@ -1,4 +1,3 @@
-import os
 import unittest
 from unittest import mock
 
@@ -29,8 +28,10 @@ class TestProfilerOptions(unittest.TestCase):
             # TODO: remove the check for correlation option once it's updated to True
             if column == "correlation" or column == "null_replication_metrics":
                 self.assertFalse(profile.options.properties[column].is_enabled)
-            elif column == "null_values":
+            elif column == "null_values" or column == "column_null_values":
                 self.assertIsNone(profile.options.properties[column])
+            elif column == "sampling_ratio":
+                self.assertEqual(profile.options.properties[column], 0.2)
             else:
                 self.assertTrue(profile.options.properties[column].is_enabled)
 
@@ -94,7 +95,7 @@ class TestProfilerOptions(unittest.TestCase):
                 self.assertIsNone(profile_column["statistics"]["min"])
                 self.assertIsNone(profile_column["statistics"]["max"])
                 self.assertTrue(np.isnan(profile_column["statistics"]["variance"]))
-                self.assertIsNone(profile_column["statistics"]["quantiles"][0])
+                self.assertIsNone(profile_column["statistics"]["quantiles"])
                 self.assertTrue(np.isnan(profile_column["statistics"]["skewness"]))
                 self.assertTrue(np.isnan(profile_column["statistics"]["kurtosis"]))
 
@@ -147,6 +148,7 @@ class TestProfilerOptions(unittest.TestCase):
         options.structured_options.order.is_enabled = False
         options.structured_options.category.is_enabled = False
         options.structured_options.chi2_homogeneity.is_enabled = False
+        options.structured_options.row_statistics.is_enabled = False
         options.structured_options.data_labeler.is_enabled = False
         profile = Profiler(self.data, options=options)
         for col_profiler in profile.profile:
@@ -240,7 +242,7 @@ class TestProfilerOptions(unittest.TestCase):
                 self.assertIsNone(profile_column["statistics"]["min"])
                 self.assertIsNone(profile_column["statistics"]["max"])
                 self.assertTrue(np.isnan(profile_column["statistics"]["variance"]))
-                self.assertIsNone(profile_column["statistics"]["quantiles"][0])
+                self.assertIsNone(profile_column["statistics"]["quantiles"])
                 self.assertTrue(profile_column["statistics"]["skewness"] is np.nan)
                 self.assertTrue(profile_column["statistics"]["kurtosis"] is np.nan)
                 self.assertTrue(

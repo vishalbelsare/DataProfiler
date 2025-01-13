@@ -14,12 +14,12 @@ dataprofiler/labelers/embeddings/glove-reduced-64D.txt
 
 .cache/
 .idea/
-.vscode
+.vscode*
 *.pyc
 *.pkl
 *.whl
 *.egg
-.DS_Store
+**/.DS_Store
 
 test/__pycache__/
 
@@ -49,6 +49,10 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# great expectations examples
+examples/great_expectations/great_expectations/
+examples/great_expectations/data/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -130,3 +134,6 @@ venv.bak/
 env3/
 
 *.bak
+
+#Pipfiles
+Pipfile*

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -9,7 +10,10 @@ import pandas as pd
 
 from dataprofiler.profilers import NumericStatsMixin
 from dataprofiler.profilers.base_column_profilers import BaseColumnProfiler
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import NumericalOptions
+
+from . import utils as test_utils
 
 test_root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
@@ -110,6 +114,47 @@ class TestNumericStatsMixin(unittest.TestCase):
         ]
         for assert_val in false_asserts:
             self.assertFalse(NumericStatsMixin.is_int(assert_val))
+
+    def test_hist_loss_on_merge(self):
+        # Initial setup of profiles
+        profile3 = TestColumn()
+        profile1 = TestColumn()
+        profile2 = TestColumn()
+        mock_histogram1 = {
+            "bin_counts": np.array([1, 1, 1, 1]),
+            "bin_edges": np.array([2, 4, 6, 8, 10]),
+        }
+        mock_histogram2 = {
+            "bin_counts": np.array([1, 1, 1, 2, 1]),
+            "bin_edges": np.array([3, 5, 8, 12, 15, 18]),
+        }
+        profile1._stored_histogram["histogram"] = mock_histogram1
+        profile2._stored_histogram["histogram"] = mock_histogram2
+        profile3.user_set_histogram_bin = 5
+        expected_edges = [2, 5.2, 8.4, 11.6, 14.8, 18]
+        bin_count = [3, 2, 2, 2, 1]
+        expected_loss = sum(
+            [
+                (((2 + 5.2) - (2 + 4)) / 2) ** 2,
+                (((2 + 5.2) - (3 + 5)) / 2) ** 2,
+                (((2 + 5.2) - (4 + 6)) / 2) ** 2,
+                (((5.2 + 8.4) - (5 + 8)) / 2) ** 2,
+                (((5.2 + 8.4) - (6 + 8)) / 2) ** 2,
+                (((8.4 + 11.6) - (8 + 12)) / 2) ** 2,
+                (((8.4 + 11.6) - (8 + 10)) / 2) ** 2,
+                (((11.6 + 14.8) - (12 + 15)) / 2) ** 2,
+                (((11.6 + 14.8) - (12 + 15)) / 2) ** 2,
+                (((14.8 + 18) - (15 + 18)) / 2) ** 2,
+            ]
+        )
+
+        profile3._add_helper_merge_profile_histograms(profile1, profile2)
+
+        self.assertAlmostEqual(
+            expected_loss,
+            profile3._stored_histogram["histogram"]["current_loss"],
+            places=9,
+        )
 
     def test_update_variance(self):
         """
@@ -352,6 +397,36 @@ class TestNumericStatsMixin(unittest.TestCase):
                 df_series, prev_dependent_properties, subset_properties
             )
             self.assertEqual(expected, num_profiler.times)
+
+    def test_from_dict_helper(self):
+        fake_profile_name = "Fake profile name"
+
+        # Build expected CategoricalColumn
+        actual_profile = TestColumn()
+        expected_profile = TestColumn()
+        mock_saved_profile = dict(
+            {
+                "quantiles": None,
+                "_stored_histogram": {
+                    "total_loss": np.float64(0.0),
+                    "current_loss": np.float64(0.0),
+                    "suggested_bin_count": 1000,
+                    "histogram": {
+                        "bin_counts": None,
+                        "bin_edges": None,
+                    },
+                },
+            }
+        )
+        expected_profile._stored_histogram = mock_saved_profile["_stored_histogram"]
+        expected_profile.quantiles = None
+        expected_profile._stored_histogram["histogram"] = {
+            "bin_counts": None,
+            "bin_edges": None,
+        }
+        actual_profile._reformat_numeric_stats_types_on_serialized_profiles()
+
+        test_utils.assert_profiles_equal(expected_profile, actual_profile)
 
     def test_histogram_bin_error(self):
         num_profiler = TestColumn()
@@ -793,13 +868,16 @@ class TestNumericStatsMixin(unittest.TestCase):
             "stddev": np.sqrt(10 / 9) - np.sqrt(9 * 20 / 19),
             "t-test": {
                 "t-statistic": 0.3923009049186606,
-                "conservative": {"df": 9, "p-value": 0.7039643545772609},
-                "welch": {"df": 25.945257024943864, "p-value": 0.6980401261750298},
+                "conservative": {"deg_of_free": 9, "p-value": 0.7039643545772609},
+                "welch": {
+                    "deg_of_free": 25.945257024943864,
+                    "p-value": 0.6980401261750298,
+                },
             },
+            "psi": None,
         }
 
         difference = other1.diff(other2)
-        self.maxDiff = None
         self.assertDictEqual(expected_diff, difference)
 
         # Invalid statistics
@@ -834,9 +912,10 @@ class TestNumericStatsMixin(unittest.TestCase):
             "stddev": np.nan,
             "t-test": {
                 "t-statistic": None,
-                "conservative": {"df": None, "p-value": None},
-                "welch": {"df": None, "p-value": None},
+                "conservative": {"deg_of_free": None, "p-value": None},
+                "welch": {"deg_of_free": None, "p-value": None},
             },
+            "psi": None,
         }
         expected_var = expected_diff.pop("variance")
         expected_stddev = expected_diff.pop("stddev")
@@ -883,21 +962,70 @@ class TestNumericStatsMixin(unittest.TestCase):
             "stddev": np.nan,
             "t-test": {
                 "t-statistic": None,
-                "conservative": {"df": None, "p-value": None},
-                "welch": {"df": None, "p-value": None},
+                "conservative": {"deg_of_free": None, "p-value": None},
+                "welch": {"deg_of_free": None, "p-value": None},
             },
+            "psi": None,
         }
         expected_var = expected_diff.pop("variance")
         expected_stddev = expected_diff.pop("stddev")
         with self.assertWarns(
             RuntimeWarning,
-            msg="Insufficient sample size. " "T-test cannot be performed.",
+            msg="Insufficient sample size. T-test cannot be performed.",
         ):
             difference = other1.diff(other2)
         var = difference.pop("variance")
         stddev = difference.pop("stddev")
         self.assertDictEqual(expected_diff, difference)
         self.assertTrue(np.isnan([expected_var, var, expected_stddev, stddev]).all())
+
+        # Constant values
+        other1, other2 = TestColumnWProps(), TestColumnWProps()
+        other1.min = 3
+        other1.max = 4
+        other1._biased_variance = 0  # constant value has 0 variance
+        other1.sum = 6
+        other1.match_count = 3
+        other1.median = 5
+        other1.mode = [3]
+        other1.median_abs_deviation = 4
+
+        other2.min = 3
+        other2.max = None
+        other2._biased_variance = 0  # constant value has 0 variance
+        other2.sum = 6
+        other2.match_count = 3
+        other2.median = 6
+        other2.mode = [2]
+        other2.median_abs_deviation = 3
+
+        expected_diff = {
+            "min": "unchanged",
+            "max": [4, None],
+            "sum": "unchanged",
+            "mean": "unchanged",
+            "median": -1,
+            "mode": [[3], [], [2]],
+            "median_absolute_deviation": 1,
+            "variance": 0,
+            "stddev": 0,
+            "t-test": {
+                "t-statistic": None,
+                "conservative": {"deg_of_free": None, "p-value": None},
+                "welch": {"deg_of_free": None, "p-value": None},
+            },
+            "psi": None,
+        }
+        expected_var = expected_diff.pop("variance")
+        expected_stddev = expected_diff.pop("stddev")
+        with self.assertWarns(
+            RuntimeWarning,
+            msg="Data were essentially constant. T-test cannot be performed.",
+        ):
+            difference = other1.diff(other2)
+        var = difference.pop("variance")
+        stddev = difference.pop("stddev")
+        self.assertDictEqual(expected_diff, difference)
 
         # Small p-value
         other1, other2 = TestColumnWProps(), TestColumnWProps()
@@ -931,9 +1059,13 @@ class TestNumericStatsMixin(unittest.TestCase):
             "stddev": np.sqrt(10 / 9) - np.sqrt(9 * 20 / 19),
             "t-test": {
                 "t-statistic": -3.138407239349285,
-                "conservative": {"df": 9, "p-value": 0.011958658754358975},
-                "welch": {"df": 25.945257024943864, "p-value": 0.004201616692122823},
+                "conservative": {"deg_of_free": 9, "p-value": 0.011958658754358975},
+                "welch": {
+                    "deg_of_free": 25.945257024943864,
+                    "p-value": 0.004201616692122823,
+                },
             },
+            "psi": None,
         }
         difference = other1.diff(other2)
         self.assertDictEqual(expected_diff, difference)
@@ -945,3 +1077,185 @@ class TestNumericStatsMixin(unittest.TestCase):
             str(exc.exception),
             "Unsupported operand type(s) for diff: 'TestColumnWProps' and" " 'str'",
         )
+
+        # PSI same distribution test
+        other1, other2 = TestColumnWProps(), TestColumnWProps()
+        other1.match_count = 55
+        other1._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {
+                "bin_counts": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                "bin_edges": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+            },
+        }
+
+        other2.match_count = 550
+        other2._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {
+                "bin_counts": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) * 10,
+                "bin_edges": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+            },
+        }
+
+        expected_psi_value = 0
+        psi_value = other1._calculate_psi(
+            self_match_count=other1.match_count,
+            self_histogram=other1._stored_histogram["histogram"],
+            other_match_count=other2.match_count,
+            other_histogram=other2._stored_histogram["histogram"],
+        )
+        self.assertEqual(expected_psi_value, psi_value)
+
+        # PSI min_min_edge == max_max_edge
+        other1, other2 = TestColumnWProps(), TestColumnWProps()
+        other1.match_count = 10
+        other1._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {"bin_counts": np.array([10]), "bin_edges": np.array([1, 1])},
+        }
+
+        other2.match_count = 20
+        other2._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {"bin_counts": np.array([20]), "bin_edges": np.array([1, 1])},
+        }
+
+        expected_psi_value = 0
+        psi_value = other1._calculate_psi(
+            self_match_count=other1.match_count,
+            self_histogram=other1._stored_histogram["histogram"],
+            other_match_count=other2.match_count,
+            other_histogram=other2._stored_histogram["histogram"],
+        )
+        self.assertEqual(expected_psi_value, psi_value)
+
+        # PSI regen other / not self
+        other1, other2 = TestColumnWProps(), TestColumnWProps()
+        other1.match_count = 55
+        other1._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {
+                "bin_counts": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                "bin_edges": np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+            },
+        }
+
+        other2.match_count = 20
+        other2._stored_histogram = {
+            "total_loss": 0,
+            "current_loss": 0,
+            "suggested_bin_count": 10,
+            "histogram": {
+                "bin_counts": np.array([5, 5, 10]),
+                "bin_edges": np.array([1, 3, 5, 7]),
+            },
+        }
+
+        expected_psi_value = 0.6617899380349177
+        psi_value = other1._calculate_psi(
+            self_match_count=other1.match_count,
+            self_histogram=other1._stored_histogram["histogram"],
+            other_match_count=other2.match_count,
+            other_histogram=other2._stored_histogram["histogram"],
+        )
+        self.assertEqual(expected_psi_value, psi_value)
+
+        # PSI regen self / not other
+        expected_psi_value = 0.6617899380349177
+        psi_value = other1._calculate_psi(
+            self_match_count=other2.match_count,
+            self_histogram=other2._stored_histogram["histogram"],
+            other_match_count=other1.match_count,
+            other_histogram=other1._stored_histogram["histogram"],
+        )
+        self.assertEqual(expected_psi_value, psi_value)
+
+    @mock.patch.multiple(
+        NumericStatsMixin,
+        __abstractmethods__=set(),
+        _filter_properties_w_options=mock.MagicMock(return_value=None),
+        create=True,
+    )
+    def test_json_encode(self):
+        mixin = NumericStatsMixin()
+
+        # Copy of NumericalStatsMixin code to test serialization of dicts
+        expected_histogram_bin_method_names = [
+            "auto",
+            "fd",
+            "doane",
+            "scott",
+            "rice",
+            "sturges",
+            "sqrt",
+        ]
+        expected_min_histogram_bin = 1000
+        expected_historam_methods = {}
+        for method in expected_histogram_bin_method_names:
+            expected_historam_methods[method] = {
+                "total_loss": 0.0,
+                "current_loss": 0.0,
+                "suggested_bin_count": expected_min_histogram_bin,
+                "histogram": {"bin_counts": None, "bin_edges": None},
+            }
+
+        serialized = json.dumps(mixin, cls=ProfileEncoder)
+        expected = json.dumps(
+            {
+                "class": "NumericStatsMixin",
+                "data": {
+                    "min": None,
+                    "max": None,
+                    "_top_k_modes": 5,
+                    "sum": 0.0,
+                    "_biased_variance": np.nan,
+                    "_biased_skewness": np.nan,
+                    "_biased_kurtosis": np.nan,
+                    "_median_is_enabled": True,
+                    "_median_abs_dev_is_enabled": True,
+                    "max_histogram_bin": 100000,
+                    "min_histogram_bin": expected_min_histogram_bin,
+                    "histogram_bin_method_names": expected_histogram_bin_method_names,
+                    "histogram_selection": None,
+                    "user_set_histogram_bin": None,
+                    "bias_correction": True,
+                    "_mode_is_enabled": True,
+                    "num_zeros": 0,
+                    "num_negatives": 0,
+                    "_num_quantiles": 1000,
+                    "histogram_methods": expected_historam_methods,
+                    "_stored_histogram": {
+                        "total_loss": 0.0,
+                        "current_loss": 0.0,
+                        "suggested_bin_count": 1000,
+                        "histogram": {"bin_counts": None, "bin_edges": None},
+                    },
+                    "_batch_history": [],
+                    "quantiles": None,
+                    "_NumericStatsMixin__calculations": {
+                        "min": "_get_min",
+                        "max": "_get_max",
+                        "sum": "_get_sum",
+                        "variance": "_get_variance",
+                        "skewness": "_get_skewness",
+                        "kurtosis": "_get_kurtosis",
+                        "histogram_and_quantiles": "_get_histogram_and_quantiles",
+                        "num_zeros": "_get_num_zeros",
+                        "num_negatives": "_get_num_negatives",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(serialized, expected)

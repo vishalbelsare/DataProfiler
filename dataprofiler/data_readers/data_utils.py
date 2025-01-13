@@ -1,24 +1,45 @@
 """Contains functions for data readers."""
 import json
+import logging
+import os
+import random
 import re
 import urllib
-from builtins import next
 from collections import OrderedDict
-from io import BytesIO, TextIOWrapper
+from io import BytesIO, StringIO, TextIOWrapper
+from itertools import islice
+from math import floor, log, log1p
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Pattern,
+    Tuple,
+    Union,
+    cast,
+)
 
+import boto3
+import botocore
 import dateutil
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import requests
 from chardet.universaldetector import UniversalDetector
+from typing_extensions import TypeGuard
 
-from .. import dp_logging
+from .. import dp_logging, rng_utils
+from .._typing import JSONType, Url
 from .filepath_or_buffer import FileOrBufferHandler, is_stream_buffer  # NOQA
 
 logger = dp_logging.get_child_logger(__name__)
 
 
-def data_generator(data_list):
+def data_generator(data_list: List[str]) -> Generator[str, None, None]:
     """
     Take a list and return a generator on the list.
 
@@ -27,11 +48,12 @@ def data_generator(data_list):
     :return: item from the list
     :rtype: generator
     """
-    for item in data_list:
-        yield item
+    yield from data_list
 
 
-def generator_on_file(file_object):
+def generator_on_file(
+    file_object: Union[StringIO, BytesIO]
+) -> Generator[Union[str, bytes], None, None]:
     """
     Take a file and return a generator that returns lines.
 
@@ -49,7 +71,7 @@ def generator_on_file(file_object):
     file_object.close()
 
 
-def convert_int_to_string(x):
+def convert_int_to_string(x: int) -> str:
     """
     Convert the given input to string.
 
@@ -69,12 +91,12 @@ def convert_int_to_string(x):
         return str(x)
 
 
-def unicode_to_str(data, ignore_dicts=False):
+def unicode_to_str(data: JSONType, ignore_dicts: bool = False) -> JSONType:
     """
     Convert data to string representation if it is a unicode string.
 
     :param data: input data
-    :type data: str
+    :type data: JSONType
     :param ignore_dicts: if set, ignore the dictionary type processing
     :type ignore_dicts: boolean
     :return: string representation of data
@@ -99,12 +121,16 @@ def unicode_to_str(data, ignore_dicts=False):
     return data
 
 
-def json_to_dataframe(json_lines, selected_columns=None, read_in_string=False):
+def json_to_dataframe(
+    json_lines: List[JSONType],
+    selected_columns: Optional[List[str]] = None,
+    read_in_string: bool = False,
+) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Take list of json objects and return dataframe representing json list.
 
     :param json_lines: list of json objects
-    :type json_lines: list(dict)
+    :type json_lines: list(JSONType)
     :param selected_columns: a list of keys to be processed
     :type selected_columns: list(str)
     :param read_in_string: if True, all the values in dataframe will be
@@ -137,7 +163,11 @@ def json_to_dataframe(json_lines, selected_columns=None, read_in_string=False):
     return df, original_df_dtypes
 
 
-def read_json_df(data_generator, selected_columns=None, read_in_string=False):
+def read_json_df(
+    data_generator: Generator,
+    selected_columns: Optional[List[str]] = None,
+    read_in_string: bool = False,
+) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Return an iterator that returns a chunk of data as dataframe in each call.
 
@@ -161,9 +191,9 @@ def read_json_df(data_generator, selected_columns=None, read_in_string=False):
     :type read_in_string: bool
     :return: returns an iterator that returns a chunk of file as dataframe in
         each call as well as original dtypes of the dataframe columns.
-    :rtype: typle(Iterator(pd.DataFrame), pd.Series(dtypes)
+    :rtype: tuple(pd.DataFrame, pd.Series(dtypes))
     """
-    lines = list()
+    lines: List[JSONType] = list()
     k = 0
     while True:
         try:
@@ -190,7 +220,11 @@ def read_json_df(data_generator, selected_columns=None, read_in_string=False):
     return json_to_dataframe(lines, selected_columns, read_in_string)
 
 
-def read_json(data_generator, selected_columns=None, read_in_string=False):
+def read_json(
+    data_generator: Iterator,
+    selected_columns: Optional[List[str]] = None,
+    read_in_string: bool = False,
+) -> List[JSONType]:
     """
     Return the lines of a json.
 
@@ -215,7 +249,7 @@ def read_json(data_generator, selected_columns=None, read_in_string=False):
     :return: returns the lines of a json file
     :rtype: list(dict)
     """
-    lines = list()
+    lines: List[JSONType] = list()
     k = 0
     while True:
         try:
@@ -242,14 +276,106 @@ def read_json(data_generator, selected_columns=None, read_in_string=False):
     return lines
 
 
+def reservoir(file: TextIOWrapper, sample_nrows: int) -> list:
+    """
+    Implement the mathematical logic of Reservoir sampling.
+
+    :param file: wrapper of the opened csv file
+    :type file: TextIOWrapper
+    :param sample_nrows: number of rows to sample
+    :type sample_nrows: int
+
+    :raises: ValueError()
+
+    :return: sampled values
+    :rtype: list
+    """
+    # Copyright 2021 Oscar Benjamin
+    #
+    # Permission is hereby granted, free of charge, to any person obtaining a copy
+    # of this software and associated documentation files (the "Software"), to deal
+    # in the Software without restriction, including without limitation the rights
+    # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    # copies of the Software, and to permit persons to whom the Software is
+    # furnished to do so, subject to the following conditions:
+    #
+    # The above copyright notice and this permission notice shall be included in
+    # all copies or substantial portions of the Software.
+    #
+    # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    # SOFTWARE.
+    # https://gist.github.com/oscarbenjamin/4c1b977181f34414a425f68589e895d1
+
+    iterator = iter(file)
+    values = list(islice(iterator, sample_nrows))
+
+    irange = range(len(values))
+    indices = dict(zip(irange, irange))
+
+    kinv = 1 / sample_nrows
+    W = 1.0
+    rng = rng_utils.get_random_number_generator()
+
+    while True:
+        W *= rng.random() ** kinv
+        # random() < 1.0 but random() ** kinv might not be
+        # W == 1.0 implies "infinite" skips
+        if W == 1.0:
+            break
+        # skip is geometrically distributed with parameter W
+        skip = floor(log(rng.random()) / log1p(-W))
+        try:
+            newval = next(islice(iterator, skip, skip + 1))
+        except StopIteration:
+            break
+        # Append new, replace old with dummy, and keep track of order
+        remove_index = rng.integers(0, sample_nrows)
+        values[indices[remove_index]] = str(None)
+        indices[remove_index] = len(values)
+        values.append(newval)
+
+    values = [values[indices[i]] for i in irange]
+    return values
+
+
+def rsample(file_path: TextIOWrapper, sample_nrows: int, args: dict) -> StringIO:
+    """
+    Implement Reservoir Sampling to sample n rows out of a total of M rows.
+
+    :param file_path: path of the csv file to be read in
+    :type file_path: TextIOWrapper
+    :param sample_nrows: number of rows being sampled
+    :type sample_nrows: int
+    :param args: options to read the csv file
+    :type args: dict
+    """
+    header = args["header"]
+    result = []
+
+    if header is not None:
+        result = [[next(file_path) for i in range(header + 1)][-1]]
+        args["header"] = 0
+
+    result += reservoir(file_path, sample_nrows)
+
+    fo = StringIO("".join([i if (i[-1] == "\n") else i + "\n" for i in result]))
+    return fo
+
+
 def read_csv_df(
-    file_path,
-    delimiter,
-    header,
-    selected_columns=[],
-    read_in_string=False,
-    encoding="utf-8",
-):
+    file_path: Union[str, BytesIO, TextIOWrapper],
+    delimiter: Optional[str],
+    header: Optional[int],
+    sample_nrows: Optional[int] = None,
+    selected_columns: List[str] = [],
+    read_in_string: bool = False,
+    encoding: Optional[str] = "utf-8",
+) -> pd.DataFrame:
     """
     Read a CSV file in chunks and return dataframe in form of iterator.
 
@@ -267,7 +393,7 @@ def read_csv_df(
     :return: Iterator
     :rtype: pd.DataFrame
     """
-    args = {
+    args: Dict[str, Any] = {
         "delimiter": delimiter,
         "header": header,
         "iterator": True,
@@ -288,68 +414,162 @@ def read_csv_df(
 
     # account for py3.6 requirement for pandas, can remove if >= py3.7
     is_buf_wrapped = False
+    is_file_open = False
     if isinstance(file_path, BytesIO):
         # a BytesIO stream has to be wrapped in order to properly be detached
         # in 3.6 this avoids read_csv wrapping the stream and closing too early
         file_path = TextIOWrapper(file_path, encoding=encoding)
         is_buf_wrapped = True
+    elif isinstance(file_path, str):
+        file_path = open(file_path, encoding=encoding)
+        is_file_open = True
 
-    fo = pd.read_csv(file_path, **args)
+    file_data = file_path
+    if sample_nrows:
+        file_data = rsample(file_path, sample_nrows, args)
+    fo = pd.read_csv(file_data, **args)
     data = fo.read()
 
     # if the buffer was wrapped, detach it before returning
     if is_buf_wrapped:
+        file_path = cast(TextIOWrapper, file_path)
         file_path.detach()
+    elif is_file_open:
+        file_path.close()
     fo.close()
 
     return data
 
 
-def read_parquet_df(file_path, selected_columns=None, read_in_string=False):
+def convert_unicode_col_to_utf8(input_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert all unicode columns in input dataframe to utf-8.
+
+    :param input_df: input dataframe
+    :type input_df: pd.DataFrame
+    :return: corrected dataframe
+    :rtype: pd.DataFrame
+    """
+    # Convert all the unicode columns to utf-8
+    input_column_types = input_df.apply(
+        lambda x: pd.api.types.infer_dtype(x.values, skipna=True)
+    )
+
+    mixed_and_unicode_cols = input_column_types[
+        input_column_types == "unicode"
+    ].index.union(input_column_types[input_column_types == "mixed"].index)
+
+    for iter_column in mixed_and_unicode_cols:
+        # Encode sting to bytes
+        input_df[iter_column] = input_df[iter_column].apply(
+            lambda x: x.encode("utf-8").strip() if isinstance(x, str) else x
+        )
+
+        # Decode bytes back to string
+        input_df[iter_column] = input_df[iter_column].apply(
+            lambda x: x.decode("utf-8").strip() if isinstance(x, bytes) else x
+        )
+
+    return input_df
+
+
+def sample_parquet(
+    file_path: str,
+    sample_nrows: int,
+    selected_columns: Optional[List[str]] = None,
+    read_in_string: bool = False,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Read parquet file, sample specified number of rows from it and return a data frame.
+
+    :param file_path: path to the Parquet file.
+    :type file_path: str
+    :param sample_nrows: number of rows being sampled
+    :type sample_nrows: int
+    :param selected_columns: columns need to be read
+    :type selected_columns: list
+    :param read_in_string: return as string type
+    :type read_in_string: bool
+    :return:
+    :rtype: Iterator(pd.DataFrame)
+    """
+    # read parquet file into table
+    if selected_columns:
+        parquet_table = pq.read_table(file_path, columns=selected_columns)
+    else:
+        parquet_table = pq.read_table(file_path)
+
+    # sample
+    n_rows = parquet_table.num_rows
+    if n_rows > sample_nrows:
+        sample_index = np.array([False] * n_rows)
+        sample_index[random.sample(range(n_rows), sample_nrows)] = True
+    else:
+        sample_index = np.array([True] * n_rows)
+    sample_df = parquet_table.filter(sample_index).to_pandas()
+
+    # Convert all the unicode columns to utf-8
+    sample_df = convert_unicode_col_to_utf8(sample_df)
+
+    original_df_dtypes = sample_df.dtypes
+    if read_in_string:
+        sample_df = sample_df.astype(str)
+
+    return sample_df, original_df_dtypes
+
+
+def read_parquet_df(
+    file_path: str,
+    sample_nrows: Optional[int] = None,
+    selected_columns: Optional[List[str]] = None,
+    read_in_string: bool = False,
+) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Return an iterator that returns one row group each time.
 
     :param file_path: path to the Parquet file.
     :type file_path: str
+    :param sample_nrows: number of rows being sampled
+    :type sample_nrows: int
+    :param selected_columns: columns need to be read
+    :type selected_columns: list
+    :param read_in_string: return as string type
+    :type read_in_string: bool
     :return:
     :rtype: Iterator(pd.DataFrame)
     """
-    parquet_file = pq.ParquetFile(file_path)
-    data = pd.DataFrame()
-    for i in range(parquet_file.num_row_groups):
+    if sample_nrows is None:
+        parquet_file = pq.ParquetFile(file_path)
+        data = pd.DataFrame()
+        for i in range(parquet_file.num_row_groups):
 
-        data_row_df = parquet_file.read_row_group(i).to_pandas()
+            data_row_df = parquet_file.read_row_group(i).to_pandas()
 
-        # Convert all the unicode columns to utf-8
-        types = data_row_df.apply(
-            lambda x: pd.api.types.infer_dtype(x.values, skipna=True)
+            # Convert all the unicode columns to utf-8
+            data_row_df = convert_unicode_col_to_utf8(data_row_df)
+
+            if selected_columns:
+                data_row_df = data_row_df[selected_columns]
+
+            data = pd.concat([data, data_row_df])
+
+        original_df_dtypes = data.dtypes
+        if read_in_string:
+            data = data.astype(str)
+        return data, original_df_dtypes
+    else:
+        data, original_df_dtypes = sample_parquet(
+            file_path,
+            sample_nrows,
+            selected_columns=selected_columns,
+            read_in_string=read_in_string,
         )
-
-        mixed_and_unicode_cols = types[types == "unicode"].index.union(
-            types[types == "mixed"].index
-        )
-
-        for col in mixed_and_unicode_cols:
-            data_row_df[col] = data_row_df[col].apply(
-                lambda x: x.encode("utf-8").strip() if isinstance(x, str) else x
-            )
-            data_row_df[col] = data_row_df[col].apply(
-                lambda x: x.decode("utf-8").strip() if isinstance(x, bytes) else x
-            )
-
-        if selected_columns:
-            data_row_df = data_row_df[selected_columns]
-
-        data = pd.concat([data, data_row_df])
-
-    original_df_dtypes = data.dtypes
-    if read_in_string:
-        data = data.astype(str)
-
-    return data, original_df_dtypes
+        return data, original_df_dtypes
 
 
-def read_text_as_list_of_strs(file_path, encoding=None):
+def read_text_as_list_of_strs(
+    file_path: str, encoding: Optional[str] = None
+) -> List[str]:
     """
     Return list of strings relative to the chunk size.
 
@@ -367,7 +587,9 @@ def read_text_as_list_of_strs(file_path, encoding=None):
     return data
 
 
-def detect_file_encoding(file_path, buffer_size=1024, max_lines=20):
+def detect_file_encoding(
+    file_path: str, buffer_size: int = 1024, max_lines: int = 20
+) -> str:
     """
     Determine encoding of files within initial `max_lines` of length `buffer_size`.
 
@@ -406,12 +628,12 @@ def detect_file_encoding(file_path, buffer_size=1024, max_lines=20):
 
     if not _decode_is_valid(encoding):
         try:
-            from charset_normalizer import CharsetNormalizerMatches as CnM
+            from charset_normalizer import from_bytes
 
             # Try with small sample
             with FileOrBufferHandler(file_path, "rb") as input_file:
                 raw_data = input_file.read(10000)
-                result = CnM.from_bytes(
+                results = from_bytes(
                     raw_data,
                     steps=5,
                     chunk_size=512,
@@ -421,16 +643,15 @@ def detect_file_encoding(file_path, buffer_size=1024, max_lines=20):
                     preemptive_behaviour=True,
                     explain=False,
                 )
-                result = result.best()
-            if result:
-                if result.first():
-                    encoding = result.first().encoding
+                best_result = results.best()
+            if best_result:
+                encoding = best_result.encoding
 
             # Try again with full sample
             if not _decode_is_valid(encoding):
                 with FileOrBufferHandler(file_path, "rb") as input_file:
                     raw_data = input_file.read(max_lines * buffer_size)
-                    result = CnM.from_bytes(
+                    results = from_bytes(
                         raw_data,
                         steps=max_lines,
                         chunk_size=buffer_size,
@@ -440,10 +661,9 @@ def detect_file_encoding(file_path, buffer_size=1024, max_lines=20):
                         preemptive_behaviour=True,
                         explain=False,
                     )
-                    result = result.best()
-                if result:
-                    if result.first():
-                        encoding = result.first().encoding
+                    best_result = results.best()
+                if best_result:
+                    encoding = best_result.encoding
 
         except Exception:
             logger.info(
@@ -456,7 +676,7 @@ def detect_file_encoding(file_path, buffer_size=1024, max_lines=20):
     return encoding.lower()
 
 
-def detect_cell_type(cell):
+def detect_cell_type(cell: str) -> str:
     """
     Detect the cell type (int, float, etc).
 
@@ -469,7 +689,8 @@ def detect_cell_type(cell):
     else:
 
         try:
-            if dateutil.parser.parse(cell, fuzzy=False):
+            # need to ingore type bc https://github.com/python/mypy/issues/8878
+            if dateutil.parser.parse(cell, fuzzy=False):  # type:ignore
                 cell_type = "date"
         except (ValueError, OverflowError, TypeError):
             pass
@@ -488,7 +709,7 @@ def detect_cell_type(cell):
     return cell_type
 
 
-def get_delimiter_regex(delimiter=",", quotechar=","):
+def get_delimiter_regex(delimiter: str = ",", quotechar: str = ",") -> Pattern[str]:
     """
     Build regex for delimiter checks.
 
@@ -518,7 +739,12 @@ def get_delimiter_regex(delimiter=",", quotechar=","):
     return re.compile(delimiter_regex + quotechar_regex)
 
 
-def find_nth_loc(string=None, search_query=None, n=0, ignore_consecutive=True):
+def find_nth_loc(
+    string: Optional[str] = None,
+    search_query: Optional[str] = None,
+    n: int = 0,
+    ignore_consecutive: bool = True,
+) -> Tuple[int, int]:
     """
     Search string via search_query and return nth index in which query occurs.
 
@@ -565,8 +791,12 @@ def find_nth_loc(string=None, search_query=None, n=0, ignore_consecutive=True):
 
 
 def load_as_str_from_file(
-    file_path, file_encoding=None, max_lines=10, max_bytes=65536, chunk_size_bytes=1024
-):
+    file_path: str,
+    file_encoding: Optional[str] = None,
+    max_lines: int = 10,
+    max_bytes: int = 65536,
+    chunk_size_bytes: int = 1024,
+) -> str:
     """
     Load data from a csv file up to a specific line OR byte_size.
 
@@ -602,7 +832,7 @@ def load_as_str_from_file(
 
             # Return either the last index of sample_lines OR
             # the index of the newline char that matches remaining_lines
-            search_query_value = "\n"
+            search_query_value: Union[str, bytes] = "\n"
             if isinstance(sample_lines, bytes):
                 search_query_value = b"\n"
 
@@ -611,7 +841,8 @@ def load_as_str_from_file(
             while start_loc < len_sample_lines - 1 and total_occurrences < max_lines:
                 loc, occurrence = find_nth_loc(
                     sample_lines[start_loc:],
-                    search_query=search_query_value,
+                    search_query=cast(str, search_query_value),
+                    # TODO: make sure find_nth_loc() works with search_query as bytes
                     n=remaining_lines,
                 )
 
@@ -629,7 +860,7 @@ def load_as_str_from_file(
     return data_as_str
 
 
-def is_valid_url(url_as_string):
+def is_valid_url(url_as_string: Any) -> TypeGuard[Url]:
     """
     Determine whether a given string is a valid URL.
 
@@ -646,7 +877,7 @@ def is_valid_url(url_as_string):
     return all([result.scheme, result.netloc])
 
 
-def url_to_bytes(url_as_string, options):
+def url_to_bytes(url_as_string: Url, options: Dict) -> BytesIO:
     """
     Read in URL and converts it to a byte stream.
 
@@ -665,12 +896,12 @@ def url_to_bytes(url_as_string, options):
 
     try:
         with requests.get(url_as_string, stream=True, verify=verify_ssl) as url:
+            url = cast(requests.Response, url)
             url.raise_for_status()
             if (
                 "Content-length" in url.headers
                 and int(url.headers["Content-length"]) >= 1024**3
             ):
-
                 raise ValueError(
                     "The downloaded file from the url may not be " "larger than 1GB"
                 )
@@ -696,3 +927,125 @@ def url_to_bytes(url_as_string, options):
 
     stream.seek(0)
     return stream
+
+
+class S3Helper:
+    """
+    A utility class for working with Amazon S3.
+
+    This class provides methods to check if a path is an S3 URI
+        and to create an S3 client.
+    """
+
+    @staticmethod
+    def is_s3_uri(path: str, logger: logging.Logger) -> bool:
+        """
+        Check if the given path is an S3 URI.
+
+        This function checks for common S3 URI prefixes "s3://" and "s3a://".
+
+        Args:
+            path (str): The path to check for an S3 URI.
+            logger (logging.Logger): The logger instance for logging.
+
+        Returns:
+            bool: True if the path is an S3 URI, False otherwise.
+        """
+        # Define the S3 URI prefixes to check
+        s3_uri_prefixes = ["s3://", "s3a://"]
+        path = path.strip()
+        # Check if the path starts with any of the specified prefixes
+        is_s3 = any(path.startswith(prefix) for prefix in s3_uri_prefixes)
+        if not is_s3:
+            logger.debug(f"'{path}' is not a valid S3 URI")
+
+        return is_s3
+
+    @staticmethod
+    def _create_boto3_client(
+        aws_access_key_id: Optional[str],
+        aws_secret_access_key: Optional[str],
+        aws_session_token: Optional[str],
+        region_name: Optional[str],
+    ) -> boto3.client:
+        return boto3.client(
+            "s3",
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            region_name=region_name,
+        )
+
+    @staticmethod
+    def create_s3_client(
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
+        aws_session_token: Optional[str] = None,
+        region_name: Optional[str] = None,
+    ) -> boto3.client:
+        """
+        Create and return an S3 client.
+
+        Args:
+            aws_access_key_id (str): The AWS access key ID.
+            aws_secret_access_key (str): The AWS secret access key.
+            aws_session_token (str): The AWS session token
+                (optional, typically used for temporary credentials).
+            region_name (str): The AWS region name (default is 'us-east-1').
+
+        Returns:
+            boto3.client: A S3 client instance.
+        """
+        # Check if credentials are not provided
+        # and use environment variables as fallback
+        if aws_access_key_id is None:
+            aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        if aws_secret_access_key is None:
+            aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        if aws_session_token is None:
+            aws_session_token = os.environ.get("AWS_SESSION_TOKEN")
+
+        # Check if region is not provided and use environment variable as fallback
+        if region_name is None:
+            region_name = os.environ.get("AWS_REGION", "us-east-1")
+
+        # Check if IAM roles for service accounts are available
+        try:
+            s3 = S3Helper._create_boto3_client(
+                aws_access_key_id, aws_secret_access_key, aws_session_token, region_name
+            )
+        except botocore.exceptions.NoCredentialsError:
+            # IAM roles are not available, so fall back to provided credentials
+            if aws_access_key_id is None or aws_secret_access_key is None:
+                raise ValueError(
+                    "AWS access key ID and secret access key are required."
+                )
+            s3 = S3Helper._create_boto3_client(
+                aws_access_key_id, aws_secret_access_key, aws_session_token, region_name
+            )
+
+        return s3
+
+    @staticmethod
+    def get_s3_uri(s3_uri: str, s3_client: boto3.client) -> BytesIO:
+        """
+        Download an object from an S3 URI and return its content as BytesIO.
+
+        Args:
+            s3_uri (str): The S3 URI specifying the location of the object to download.
+            s3_client (boto3.client): An initialized AWS S3 client
+                for accessing the S3 service.
+
+        Returns:
+            BytesIO: A BytesIO object containing the content of
+                the downloaded S3 object.
+        """
+        # Parse the S3 URI
+        parsed_uri = urllib.parse.urlsplit(s3_uri)
+        bucket_name = parsed_uri.netloc
+        file_key = parsed_uri.path.lstrip("/")
+        # Download the S3 object
+        response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+
+        # Return the object's content as BytesIO
+        return BytesIO(response["Body"].read())

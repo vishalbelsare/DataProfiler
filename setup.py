@@ -16,7 +16,18 @@ here = path.abspath(path.dirname(__file__))
 
 # Get the long description from the README file
 with open(path.join(here, "README.md"), encoding="utf-8") as f:
-    LONG_DESCRIPTION = f.read()
+    tag_to_replace = ""
+    tag_found = False
+    LONG_DESCRIPTION = ""
+
+    for line in f:
+        LONG_DESCRIPTION += line
+        if '<p text-align="left">' in line or tag_found:
+            tag_found = True
+            tag_to_replace += line
+        if "</p>" in line and tag_found:
+            tag_found = False
+    LONG_DESCRIPTION = LONG_DESCRIPTION.replace(tag_to_replace, "")
 
 # Get the install_requirements from requirements.txt
 with open(path.join(here, "requirements.txt"), encoding="utf-8") as f:
@@ -30,7 +41,7 @@ with open(path.join(here, "requirements-ml.txt"), encoding="utf-8") as f:
 with open(path.join(here, "requirements-reports.txt"), encoding="utf-8") as f:
     reports_packages = f.read().splitlines()
 
-resource_dir = "resources/"
+resource_dir = "resources"
 default_labeler_files = [
     (d, [os.path.join(d, f) for f in files]) for d, _, files in os.walk(resource_dir)
 ]
@@ -43,14 +54,14 @@ DESCRIPTION = (
 setup(
     name="DataProfiler",
     version=__version__,
-    python_requires=">=3.6",
+    python_requires=">=3.9",
     description=DESCRIPTION,
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
     # The project's main homepage.
     url="https://github.com/capitalone/data-profiler",
     # Author details
-    author="Jeremy Goodsitt, Austin Walters, Anh Truong, Grant Eden",
+    author="Jeremy Goodsitt, Taylor Turner, Michael Davis, Kenny Bean, Tyler Farnan",
     # Choose your license
     license="Apache License, Version 2.0",
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers

@@ -14,6 +14,7 @@ from dataprofiler.labelers.data_processing import (
     CharEncodedPreprocessor,
     CharPostprocessor,
     CharPreprocessor,
+    ColumnNameModelPostprocessor,
     DirectPassPreprocessor,
     RegexPostProcessor,
     StructCharPostprocessor,
@@ -194,6 +195,7 @@ class TestBaseDataProcessor(unittest.TestCase):
         with mock.patch(
             "dataprofiler.labelers.data_processing." "BaseDataProcessor.processor_type",
             new_callable=mock.PropertyMock(return_value="test"),
+            create=True,
         ):
             mocked_processor = BaseDataProcessor.load_from_disk("test/path")
 
@@ -2806,9 +2808,7 @@ class TestRegexPostProcessor(unittest.TestCase):
 
         # second random
         random_state = random.Random(1)
-        expected_output = dict(
-            pred=np.array([np.array([1, 2, 2, 1]), np.array([1, 1, 2])])
-        )
+        expected_output = dict(pred=([np.array([1, 2, 2, 1]), np.array([1, 1, 2])]))
         processor = RegexPostProcessor(
             aggregation_func="random", random_state=random_state
         )
@@ -2928,3 +2928,72 @@ class TestStructRegexPostProcessor(unittest.TestCase):
             ValueError, "`random_state` must be a random.Random."
         ):
             processor = StructRegexPostProcessor(random_state=[None, None, None])
+
+
+class TestColumnNameModelPostprocessor(unittest.TestCase):
+    def test_registered_subclass(self):
+        self.assertEqual(
+            ColumnNameModelPostprocessor,
+            BaseDataProcessor.get_class(ColumnNameModelPostprocessor.__name__),
+        )
+
+    @mock.patch("sys.stdout", new_callable=StringIO)
+    def test_help(self, mock_stdout):
+        ColumnNameModelPostprocessor.help()
+        self.assertIn("Parameters", mock_stdout.getvalue())
+        self.assertIn("Output Format", mock_stdout.getvalue())
+
+    def test_process(self):
+        """Test post-processing data from the ColumnNameModel class."""
+        data = ["ssn", "role_name", "wallet_address"]
+        model_output = {
+            "pred": np.array(["ssn"], dtype="<U32"),
+            "conf": np.array([100.0]),
+        }
+        expected_output = {
+            "pred": np.array(["ssn"], dtype="<U32"),
+            "conf": np.array([100.0]),
+        }
+
+        processor = ColumnNameModelPostprocessor()
+        process_output = processor.process(data, results=model_output)
+        self.assertDictEqual(expected_output, process_output)
+
+    def test_set_params(self):
+        """becuase there are no permitted parameters to the __init__
+        method anymore, this acts as both a `set_params` and
+        `_validate_parameters` unit test"""
+        processor = ColumnNameModelPostprocessor()
+        with self.assertRaisesRegex(
+            ValueError, "`failing` is not a permited parameter."
+        ):
+            processor.set_params(failing="failure")
+
+    @mock.patch("builtins.open")
+    def test_save_processor(self, mock_open, *mocks):
+        # setup mocks
+        mock_file = setup_save_mock_open(mock_open)
+
+        # setup mocked class
+        column_name_processor_mock = mock.Mock(spec=ColumnNameModelPostprocessor)()
+        column_name_processor_mock.processor_type = "test"
+
+        test_parameters = {
+            "positive_threshold_config": 85,
+            "true_positive_dict": [
+                {"attribute": "ssn", "label": "ssn"},
+                {"attribute": "suffix", "label": "name"},
+                {"attribute": "my_home_address", "label": "address"},
+            ],
+        }
+        column_name_processor_mock.get_parameters.return_value = test_parameters
+
+        # call save processor func
+        ColumnNameModelPostprocessor._save_processor(column_name_processor_mock, "test")
+
+        # assert parameters saved
+        mock_open.assert_called_with("test/test_parameters.json", "w")
+        self.assertEqual(json.dumps(test_parameters), mock_file.getvalue())
+
+        # close mocks
+        StringIO.close(mock_file)

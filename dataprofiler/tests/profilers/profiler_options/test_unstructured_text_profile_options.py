@@ -1,3 +1,6 @@
+import json
+
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import BooleanOption, TextProfilerOptions
 from dataprofiler.tests.profilers.profiler_options.test_base_inspector_options import (
     TestBaseInspectorOptions,
@@ -79,7 +82,7 @@ class TestTextProfilerOptions(TestBaseInspectorOptions):
                 option.set({prop: value})
                 self.assertEqual(value, getattr(option, prop), msg=prop)
             else:
-                prop_enable = "{}.is_enabled".format(prop)
+                prop_enable = f"{prop}.is_enabled"
                 option.set({prop_enable: value})
                 self.assertEqual(value, option.properties[prop].is_enabled, msg=prop)
 
@@ -120,11 +123,11 @@ class TestTextProfilerOptions(TestBaseInspectorOptions):
             option.set({"vocab.is_enabled.other_props": True})
 
     def test_validate_helper(self):
-        super(TestTextProfilerOptions, self).test_validate_helper()
+        super().test_validate_helper()
 
     def test_validate(self):
 
-        super(TestTextProfilerOptions, self).test_validate()
+        super().test_validate()
 
         params_to_check = [
             # non errors
@@ -213,12 +216,12 @@ class TestTextProfilerOptions(TestBaseInspectorOptions):
                     self.assertListEqual(
                         expected_errors,
                         validate_errors,
-                        msg="Errored for prop: {}, value: {}.".format(prop, value),
+                        msg=f"Errored for prop: {prop}, value: {value}.",
                     )
                 else:
                     self.assertIsNone(
                         validate_errors,
-                        msg="Errored for prop: {}, value: {}.".format(prop, value),
+                        msg=f"Errored for prop: {prop}, value: {value}.",
                     )
 
         # this time testing raising an error
@@ -244,3 +247,29 @@ class TestTextProfilerOptions(TestBaseInspectorOptions):
         self.assertNotEqual(options, options2)
         options2.words.is_enabled = False
         self.assertEqual(options, options2)
+
+    def test_json_encode(self):
+        option = TextProfilerOptions(
+            is_enabled=False,
+            is_case_sensitive=False,
+            stop_words=["ab", "aa", "aba"],
+            top_k_chars=5,
+            top_k_words=8,
+        )
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "TextProfilerOptions",
+            "data": {
+                "is_enabled": False,
+                "is_case_sensitive": False,
+                "top_k_chars": 5,
+                "top_k_words": 8,
+                "stop_words": ["ab", "aa", "aba"],
+                "vocab": {"class": "BooleanOption", "data": {"is_enabled": True}},
+                "words": {"class": "BooleanOption", "data": {"is_enabled": True}},
+            },
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))

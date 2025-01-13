@@ -1,14 +1,20 @@
 """Text profile analysis for individual col within structured profiling.."""
+from __future__ import annotations
 
 import itertools
 
-from . import utils
+import numpy as np
+import pandas as pd
+
+from . import profiler_utils
 from .base_column_profilers import BaseColumnPrimitiveTypeProfiler, BaseColumnProfiler
 from .numerical_column_stats import NumericStatsMixin
 from .profiler_options import TextOptions
 
 
-class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
+class TextColumn(
+    NumericStatsMixin["TextColumn"], BaseColumnPrimitiveTypeProfiler["TextColumn"]
+):
     """
     Text column profile subclass of BaseColumnProfiler.
 
@@ -17,7 +23,7 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
 
     type = "text"
 
-    def __init__(self, name, options=None):
+    def __init__(self, name: str | None, options: TextOptions = None) -> None:
         """
         Initialize column base properties and itself.
 
@@ -32,11 +38,11 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
             )
         NumericStatsMixin.__init__(self, options)
         BaseColumnPrimitiveTypeProfiler.__init__(self, name)
-        self.vocab = list()
+        self.vocab: list = list()
         self.__calculations = {"vocab": TextColumn._update_vocab}
         self._filter_properties_w_options(self.__calculations, options)
 
-    def __add__(self, other):
+    def __add__(self, other: TextColumn) -> TextColumn:
         """
         Merge properties of two TextColumn profiles.
 
@@ -52,8 +58,8 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
                 "'TextColumn' and '{}'".format(other.__class__.__name__)
             )
         merged_profile = TextColumn(None)
-        NumericStatsMixin._add_helper(merged_profile, self, other)
         BaseColumnPrimitiveTypeProfiler._add_helper(merged_profile, self, other)
+        NumericStatsMixin._add_helper(merged_profile, self, other)
         self._merge_calculations(
             merged_profile.__calculations, self.__calculations, other.__calculations
         )
@@ -62,7 +68,7 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
             merged_profile._update_vocab(other.vocab)
         return merged_profile
 
-    def report(self, remove_disabled_flag=False):
+    def report(self, remove_disabled_flag: bool = False) -> dict:
         """Report profile attribute of class; potentially pop val from self.profile."""
         calcs_dict_keys = self._TextColumn__calculations.keys()
         profile = self.profile
@@ -78,7 +84,7 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         return profile
 
     @property
-    def profile(self):
+    def profile(self) -> dict:
         """
         Return the profile of the column.
 
@@ -92,7 +98,7 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         profile.update(dict(vocab=self.vocab))
         return profile
 
-    def diff(self, other_profile, options=None):
+    def diff(self, other_profile: TextColumn, options: dict = None) -> dict:
         """
         Find the differences for text columns.
 
@@ -101,13 +107,18 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         :return: the text columns differences
         :rtype: dict
         """
+        # Make sure other_profile's type matches this class
         differences = NumericStatsMixin.diff(self, other_profile, options)
-        vocab_diff = utils.find_diff_of_lists_and_sets(self.vocab, other_profile.vocab)
+
+        del differences["psi"]
+        vocab_diff = profiler_utils.find_diff_of_lists_and_sets(
+            self.vocab, other_profile.vocab
+        )
         differences["vocab"] = vocab_diff
         return differences
 
     @property
-    def data_type_ratio(self):
+    def data_type_ratio(self) -> float | None:
         """
         Calculate the ratio of samples which match this data type.
 
@@ -121,8 +132,11 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
 
     @BaseColumnProfiler._timeit(name="vocab")
     def _update_vocab(
-        self, data, prev_dependent_properties=None, subset_properties=None
-    ):
+        self,
+        data: list | np.ndarray | pd.DataFrame,
+        prev_dependent_properties: dict = None,
+        subset_properties: dict = None,
+    ) -> None:
         """
         Find the unique vocabulary used in the text column.
 
@@ -136,10 +150,10 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         :type subset_properties: dict
         :return: None
         """
-        data_flat = list(itertools.chain(*data))
-        self.vocab = utils._combine_unique_sets(self.vocab, data_flat)
+        data_flat = set(itertools.chain(*data))
+        self.vocab = profiler_utils._combine_unique_sets(self.vocab, data_flat)
 
-    def _update_helper(self, df_series_clean, profile):
+    def _update_helper(self, df_series_clean: pd.Series, profile: dict) -> None:
         """
         Update col profile properties with clean dataset and its known null parameters.
 
@@ -156,13 +170,14 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         if self.max:
             self.type = "string" if self.max <= 255 else "text"
 
-    def update(self, df_series):
+    def update(self, df_series: pd.Series) -> TextColumn:
         """
         Update the column profile.
 
         :param df_series: df series
         :type df_series: pandas.core.series.Series
-        :return: None
+        :return: updated TextColumn
+        :rtype: TextColumn
         """
         len_df = len(df_series)
         if len_df == 0:
@@ -181,3 +196,20 @@ class TextColumn(NumericStatsMixin, BaseColumnPrimitiveTypeProfiler):
         self._update_helper(df_series, profile)
 
         return self
+
+    @classmethod
+    def load_from_dict(cls, data, config: dict | None = None):
+        """
+        Parse attribute from json dictionary into self.
+
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: TextColumn
+        """
+        profile = super().load_from_dict(data)
+        profile._reformat_numeric_stats_types_on_serialized_profiles()
+        return profile

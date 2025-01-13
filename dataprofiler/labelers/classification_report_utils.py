@@ -1,11 +1,14 @@
 """Contains functions for classification."""
+from __future__ import annotations
+
 import warnings
+from typing import cast
 
 import numpy as np
 import sklearn.metrics._classification
 
 
-def convert_confusion_matrix_to_MCM(conf_matrix):
+def convert_confusion_matrix_to_MCM(conf_matrix: list | np.ndarray) -> np.ndarray:
     """
     Convert a confusion matrix into the MCM format.
 
@@ -52,14 +55,14 @@ def convert_confusion_matrix_to_MCM(conf_matrix):
 
 
 def precision_recall_fscore_support(
-    MCM,
-    beta=1.0,
-    labels=None,
-    pos_label=1,
-    average=None,
-    warn_for=("precision", "recall", "f-score"),
-    sample_weight=None,
-):
+    MCM: np.ndarray,
+    beta: float = 1.0,
+    labels: np.ndarray | None = None,
+    pos_label: str | int = 1,
+    average: str | None = None,
+    warn_for: tuple[str, ...] | set[str] = ("precision", "recall", "f-score"),
+    sample_weight: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """
     Perform same functionality as recision_recall_fscore_support function.
 
@@ -107,7 +110,7 @@ def precision_recall_fscore_support(
             false negatives and false positives.
         ``'macro'``:
             Calculate metrics for each label, and find their unweighted
-            mean.  This does not take label imbalance into account.
+            mean. This does not take label imbalance into account.
         ``'weighted'``:
             Calculate metrics for each label, and find their average weighted
             by support (the number of true instances for each label). This
@@ -222,13 +225,13 @@ def precision_recall_fscore_support(
 
 
 def classification_report(
-    conf_matrix,
-    labels=None,
-    target_names=None,
-    sample_weight=None,
-    digits=2,
-    output_dict=False,
-):
+    conf_matrix: np.ndarray,
+    labels: list | np.ndarray | None = None,
+    target_names: list[str] | None = None,
+    sample_weight: np.ndarray | None = None,
+    digits: int = 2,
+    output_dict: bool = False,
+) -> str | dict:
     """
     Build a text report showing the main classification metrics.
 
@@ -318,15 +321,14 @@ def classification_report(
     if target_names is not None and len(labels) != len(target_names):
         if labels_given:
             warnings.warn(
-                "labels size, {0}, does not match size of target_names, {1}".format(
-                    len(labels), len(target_names)
-                )
+                f"labels size, {len(labels)}, does not match size of "
+                f"target_names, {len(target_names)}"
             )
         else:
             raise ValueError(
-                "Number of classes, {0}, does not match size of "
-                "target_names, {1}. Try specifying the labels "
-                "parameter".format(len(labels), len(target_names))
+                f"Number of classes, {len(labels)}, does not match size of "
+                f"target_names, {len(target_names)}. Try specifying the labels "
+                "parameter"
             )
     if target_names is None:
         target_names = ["%s" % label for label in labels]
@@ -342,15 +344,15 @@ def classification_report(
     p, r, f1, s = precision_recall_fscore_support(
         MCM, labels=labels, average=None, sample_weight=sample_weight
     )
-    rows = zip(target_names, p, r, f1, s)
+    rows = zip(target_names, p, r, f1, cast(np.ndarray, s))
 
     if y_type.startswith("multilabel"):
-        average_options = ("micro", "macro", "weighted", "samples")
+        average_options: tuple[str, ...] = ("micro", "macro", "weighted", "samples")
     else:
         average_options = ("micro", "macro", "weighted")
 
     if output_dict:
-        report_dict = {label[0]: label[1:] for label in rows}
+        report_dict: dict = {label[0]: label[1:] for label in rows}
         for label, scores in report_dict.items():
             report_dict[label] = dict(zip(headers, [i.item() for i in scores]))
     else:
@@ -379,7 +381,7 @@ def classification_report(
         avg_p, avg_r, avg_f1, _ = precision_recall_fscore_support(
             MCM, labels=labels, average=average, sample_weight=sample_weight
         )
-        avg = [avg_p, avg_r, avg_f1, np.sum(s)]
+        avg = [avg_p, avg_r, avg_f1, np.sum(cast(np.ndarray, s))]
 
         if output_dict:
             report_dict[line_heading] = dict(zip(headers, [i.item() for i in avg]))

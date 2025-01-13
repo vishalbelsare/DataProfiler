@@ -1,3 +1,6 @@
+import json
+
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.profilers.profiler_options import PrecisionOptions
 from dataprofiler.tests.profilers.profiler_options.test_boolean_option import (
     TestBooleanOption,
@@ -52,21 +55,17 @@ class TestPrecisionOptions(TestBooleanOption):
 
         # Option sample_ratio cannot be a string, must be a float
         option = self.get_options(sample_ratio="Hello World")
-        expected_error = ["{}.sample_ratio must be a float.".format(optpth)]
+        expected_error = [f"{optpth}.sample_ratio must be a float."]
         self.assertSetEqual(set(expected_error), set(option._validate_helper()))
 
         # Option sample_ratio must be between 0 and 1
         option = self.get_options(sample_ratio=1.1)
-        expected_error = [
-            "{}.sample_ratio must be a float between 0 and 1.".format(optpth)
-        ]
+        expected_error = [f"{optpth}.sample_ratio must be a float between 0 and 1."]
         self.assertSetEqual(set(expected_error), set(option._validate_helper()))
 
         # Option sample_ratio must be between 0 and 1
         option = self.get_options(sample_ratio=-0.1)
-        expected_error = [
-            "{}.sample_ratio must be a float between 0 and 1.".format(optpth)
-        ]
+        expected_error = [f"{optpth}.sample_ratio must be a float between 0 and 1."]
         self.assertSetEqual(set(expected_error), set(option._validate_helper()))
 
     def test_validate(self):
@@ -119,3 +118,15 @@ class TestPrecisionOptions(TestBooleanOption):
         self.assertNotEqual(options, options2)
         options2.sample_ratio = 0.3
         self.assertEqual(options, options2)
+
+    def test_json_encode(self):
+        option = PrecisionOptions(is_enabled=False, sample_ratio=0.5)
+
+        serialized = json.dumps(option, cls=ProfileEncoder)
+
+        expected = {
+            "class": "PrecisionOptions",
+            "data": {"sample_ratio": 0.5, "is_enabled": False},
+        }
+
+        self.assertDictEqual(expected, json.loads(serialized))

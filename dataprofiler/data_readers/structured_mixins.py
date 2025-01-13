@@ -1,12 +1,15 @@
 """Contains mixin data class for loading datasets of tye SpreadSheet."""
+from logging import Logger
+from typing import Any, Dict, List, Optional, Union, cast
+
 import pandas as pd
 
 from .. import dp_logging
 
-logger = dp_logging.get_child_logger(__name__)
+logger: Logger = dp_logging.get_child_logger(__name__)
 
 
-class SpreadSheetDataMixin(object):
+class SpreadSheetDataMixin:
     """
     Mixin data class for loading datasets of type SpreadSheet.
 
@@ -22,24 +25,29 @@ class SpreadSheetDataMixin(object):
     :return: None
     """
 
-    def __init__(self, input_file_path, data, options):
+    def __init__(
+        self, input_file_path: Optional[str], data: Any, options: Dict
+    ) -> None:
         """Initialize spreadsheet mixin object."""
+        self._data_formats: Dict = dict()
         self._data_formats["dataframe"] = self._get_data_as_df
+        self._original_df_dtypes: Optional[pd.Series]
+        self.input_file_path: Optional[str] = input_file_path
         if data is not None and isinstance(data, pd.DataFrame):
             self._original_df_dtypes = data.dtypes
         else:
             self._original_df_dtypes = None
         self.SAMPLES_PER_LINE_DEFAULT = int(5e9)
 
-    def _load_data_from_str(self, data_as_str):
+    def _load_data_from_str(self, data_as_str: str) -> Any:
         """Load the data into memory from the str."""
         raise NotImplementedError()
 
-    def _load_data_from_file(self, input_file_path):
+    def _load_data_from_file(self, input_file_path: str) -> Any:
         """Load the data into memory from the file."""
         raise NotImplementedError()
 
-    def _load_data(self, data=None):
+    def _load_data(self, data: Optional[Union[pd.DataFrame, str]] = None) -> None:
         """Load either the specified data or the input_file into memory."""
         if data is not None:
             if isinstance(data, pd.DataFrame):
@@ -53,7 +61,7 @@ class SpreadSheetDataMixin(object):
         else:
             raise ValueError("No data to load.")
 
-    def _get_data_as_df(self, data):
+    def _get_data_as_df(self, data: pd.DataFrame) -> pd.DataFrame:
         """Return data frame."""
         if not isinstance(data, pd.DataFrame):
             raise ValueError(
@@ -61,7 +69,7 @@ class SpreadSheetDataMixin(object):
             )
         return data
 
-    def _get_data_as_records(self, data):
+    def _get_data_as_records(self, data: Any) -> List[str]:
         """Return data records."""
         records_per_line = min(len(data), self.SAMPLES_PER_LINE_DEFAULT)
         data = [
@@ -72,4 +80,4 @@ class SpreadSheetDataMixin(object):
             )
             for i in range((len(data) + records_per_line - 1) // records_per_line)
         ]
-        return data
+        return cast(List[str], data)

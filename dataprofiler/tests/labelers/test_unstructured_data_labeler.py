@@ -68,6 +68,7 @@ class TestDataLabeler(unittest.TestCase):
     @staticmethod
     def _setup_mock_load_model(mock_load_model):
         model_mock = mock.Mock(spec=CharacterLevelCnnModel)
+        model_mock.__class__.__name__ = "CharacterLevelCnnModel"
         model_mock.set_num_labels = mock.Mock()
         mock_load_model.return_value = model_mock
         model_mock.requires_zero_mapping = True
@@ -128,7 +129,7 @@ class TestDataLabeler(unittest.TestCase):
             ".* != .*",
         ):
             mocked_model = mock.Mock(spec=CharacterLevelCnnModel)
-            mocked_model.__name__ = "FakeClassName"
+            mocked_model.__class__.__name__ = "FakeClassName"
             load_options = dict(model_class=mocked_model)
             UnstructuredDataLabeler._load_parameters("test/path", load_options)
 
@@ -147,7 +148,7 @@ class TestDataLabeler(unittest.TestCase):
             "preprocessor.\n .* != .*",
         ):
             mocked_preprocessor = mock.Mock(spec=data_processing.BaseDataPreprocessor)
-            mocked_preprocessor.__name__ = "FakeProcessorName"
+            mocked_preprocessor.__class__.__name__ = "FakeProcessorName"
             load_options = dict(preprocessor_class=mocked_preprocessor)
             UnstructuredDataLabeler._load_parameters("test/path", load_options)
 
@@ -276,7 +277,7 @@ class TestDataLabeler(unittest.TestCase):
         invalid_data = ["string", 1, None, dict()]
         print("\nInvalid Data Checks:")
         for data in invalid_data:
-            print("\tChecking data format: {}".format(str(type(data))))
+            print(f"\tChecking data format: {str(type(data))}")
             _invalid_check(data)
 
         # cannot predict dict
@@ -288,7 +289,7 @@ class TestDataLabeler(unittest.TestCase):
     def test_valid_fit_data_formats(self, *mocks):
         def _valid_check(data):
             try:
-                print("\tChecking data format: {}".format(str(type(data))))
+                print(f"\tChecking data format: {str(type(data))}")
                 data = UnstructuredDataLabeler._check_and_return_valid_data_format(
                     data, fit_or_predict="fit"
                 )
@@ -313,7 +314,7 @@ class TestDataLabeler(unittest.TestCase):
     def test_valid_predict_data_formats(self, *mocks):
         def _valid_check(data):
             try:
-                print("\tChecking data format: {}".format(str(type(data))))
+                print(f"\tChecking data format: {str(type(data))}")
                 data = UnstructuredDataLabeler._check_and_return_valid_data_format(
                     data, fit_or_predict="predict"
                 )

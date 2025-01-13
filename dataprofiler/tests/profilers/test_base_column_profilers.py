@@ -1,18 +1,18 @@
-from __future__ import print_function
-
+import json
 import os
 import unittest
+from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-import six
 
-from dataprofiler.profilers import utils
+from dataprofiler.profilers import profiler_utils
 from dataprofiler.profilers.base_column_profilers import (
     BaseColumnPrimitiveTypeProfiler,
     BaseColumnProfiler,
 )
+from dataprofiler.profilers.json_encoder import ProfileEncoder
 from dataprofiler.tests.profilers import utils as test_utils
 
 
@@ -100,7 +100,7 @@ class TestBaseColumnProfileClass(unittest.TestCase):
 
         self.assertEqual(
             str(exc.exception),
-            "Column names unmatched: {} != {}".format(profile1.name, profile2.name),
+            f"Column names unmatched: {profile1.name} != {profile2.name}",
         )
 
     def test_time_it(self):
@@ -144,6 +144,27 @@ class TestBaseColumnProfileClass(unittest.TestCase):
             test_time3(profile1)
             self.assertTrue("SetName" in profile1.times)
 
+    def test_json_encode(self):
+        with patch.multiple(BaseColumnProfiler, __abstractmethods__=set()):
+            profile = BaseColumnProfiler(name="0")
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        expected = json.dumps(
+            {
+                "class": "BaseColumnProfiler",
+                "data": {
+                    "name": "0",
+                    "col_index": np.nan,
+                    "sample_size": 0,
+                    "metadata": dict(),
+                    "times": defaultdict(),
+                    "thread_safe": True,
+                },
+            }
+        )
+
+        self.assertEqual(expected, serialized)
+
 
 class TestBaseColumnPrimitiveTypeProfileClass(unittest.TestCase):
     @classmethod
@@ -164,8 +185,8 @@ class TestBaseColumnPrimitiveTypeProfileClass(unittest.TestCase):
     def test_combine_unqiue_sets(self):
         a = [1, 2, 3]
         b = [3, 1, 4, -1]
-        c = utils._combine_unique_sets(a, b)
-        six.assertCountEqual(self, [1, 2, 3, 4, -1], c)
+        c = profiler_utils._combine_unique_sets(a, b)
+        self.assertCountEqual([1, 2, 3, 4, -1], c)
 
     def test__init__(self):
         self.assertEqual(0, self.b_profile.name)
@@ -184,8 +205,7 @@ class TestBaseColumnPrimitiveTypeProfileClass(unittest.TestCase):
         self.assertDictEqual(metadata, self.b_profile.metadata)
 
     def test_update_match_are_abstract(self):
-        six.assertCountEqual(
-            self,
+        self.assertCountEqual(
             {"_update_helper", "update", "report", "profile"},
             BaseColumnPrimitiveTypeProfiler.__abstractmethods__,
         )
@@ -229,7 +249,7 @@ def get_object_path(obj):
     return ".".join(["data_profiler.profilers.profile_builder", obj.__name__])
 
 
-class AbstractTestColumnProfiler(object):
+class AbstractTestColumnProfiler:
 
     column_profiler = None
 
@@ -309,5 +329,5 @@ class AbstractTestColumnProfiler(object):
         profile = self.column_profiler(self.aws_dataset["datetime"])
         report = profile.profile
 
-        six.assertCountEqual(self, self.profile_types, report.keys())
+        self.assertCountEqual(self.profile_types, report.keys())
         self._delete_profiler_mocks()

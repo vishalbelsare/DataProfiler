@@ -1,59 +1,60 @@
 """Contains functions for profilers."""
+from __future__ import annotations
+
 import collections
 import copy
 import datetime
 import functools
 import math
 import multiprocessing as mp
-import os
 import time
 import warnings
+from abc import abstractmethod
 from itertools import islice
+from multiprocessing.pool import Pool
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    Iterator,
+    Protocol,
+    TypeVar,
+    cast,
+    overload,
+)
 
 import numpy as np
 import psutil
 import scipy
+from pandas import DataFrame, Series
 
-from dataprofiler import settings
+from ..labelers.data_labelers import DataLabeler
+
+if TYPE_CHECKING:
+    from ..labelers.base_data_labeler import BaseDataLabeler
+    from . import profile_builder
+
+from .. import rng_utils
 
 
-def dict_merge(dct, merge_dct):
-    # Recursive dictionary merge
-    # Copyright (C) 2016 Paul Durivage <pauldurivage+github@gmail.com>
-    #
-    # This program is free software: you can redistribute it and/or modify
-    # it under the terms of the GNU General Public License as published by
-    # the Free Software Foundation, either version 3 of the License, or
-    # (at your option) any later version.
-    #
-    # This program is distributed in the hope that it will be useful,
-    # but WITHOUT ANY WARRANTY; without even the implied warranty of
-    # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    # GNU General Public License for more details.
-    #
-    # You should have received a copy of the GNU General Public License
-    # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+def recursive_dict_update(d: dict, update_d: dict) -> dict:
     """
-    Merge dict recursively.
+    Recursive updates nested dictionaries. Updating d with update_d.
 
-    Inspired by :meth:``dict.update()``, instead of updating only
-    top-level keys, dict_merge recurses down into dicts nested
-    to an arbitrary depth, updating keys. The ``merge_dct`` is
-    merged into ``dct``.
-
-    :param dct: dict onto which the merge is executed
-    :param merge_dct: dct merged into dct
-    :return: None
+    :param d: dict which gets updated with update_d
+    :param update_d: dict to update d with
+    :return: updated dict
     """
-    for k, v in merge_dct.items():
-        if (
-            k in dct
-            and isinstance(dct[k], dict)
-            and isinstance(merge_dct[k], collections.abc.Mapping)
+    for k, v in update_d.items():
+        if isinstance(v, collections.abc.Mapping) and isinstance(
+            d.get(k, None), collections.abc.Mapping
         ):
-            dict_merge(dct[k], merge_dct[k])
+            d[k] = recursive_dict_update(d.get(k, {}), cast(Dict, v))
         else:
-            dct[k] = merge_dct[k]
+            d[k] = v
+    return d
 
 
 class KeyDict(collections.defaultdict):
@@ -65,22 +66,22 @@ class KeyDict(collections.defaultdict):
     https://www.drmaciver.com/2018/01/lazy-fisher-yates-shuffling-for-precise-rejection-sampling/
     """
 
-    def __missing__(self, key):
+    def __missing__(self, key: str) -> str:
         """Return key if key nonexistent."""
         return key
 
 
-def _combine_unique_sets(a, b):
+def _combine_unique_sets(a: list | set, b: list | set) -> list:
     """
     Unify two lists.
 
-    :type a: list
-    :type b: list
+    :type a: Union [list, set]
+    :type b: Union[list, set]
     :rtype: list
     """
-    combined_list = None
+    combined_list: set = set()
     if not a and not b:
-        combined_list = list()
+        combined_list = set()
     elif not a:
         combined_list = set(b)
     elif not b:
@@ -90,7 +91,9 @@ def _combine_unique_sets(a, b):
     return list(combined_list)
 
 
-def shuffle_in_chunks(data_length, chunk_size):
+def shuffle_in_chunks(
+    data_length: int, chunk_size: int
+) -> Generator[list[int], None, Any]:
     """
     Create shuffled indexes in chunks.
 
@@ -106,14 +109,7 @@ def shuffle_in_chunks(data_length, chunk_size):
     if not data_length or data_length == 0 or not chunk_size or chunk_size == 0:
         return []
 
-    rng = np.random.default_rng(settings._seed)
-
-    if "DATAPROFILER_SEED" in os.environ and settings._seed is None:
-        try:
-            seed_value = int(os.environ.get("DATAPROFILER_SEED"))
-            rng = np.random.default_rng(seed_value)
-        except ValueError:
-            warnings.warn("Seed should be an integer", RuntimeWarning)
+    rng = rng_utils.get_random_number_generator()
 
     indices = KeyDict()
     j = 0
@@ -131,7 +127,6 @@ def shuffle_in_chunks(data_length, chunk_size):
 
         # shuffle the indexes
         for count in range(true_chunk_size):
-
             # get a random index to swap and swap it with j
             k = random_list[count]
             indices[j], indices[k] = indices[k], indices[j]
@@ -145,7 +140,7 @@ def shuffle_in_chunks(data_length, chunk_size):
         yield values
 
 
-def warn_on_profile(col_profile, e):
+def warn_on_profile(col_profile: str, e: Exception) -> None:
     """
     Return a warning if a given profile errors (tensorflow typically).
 
@@ -157,9 +152,9 @@ def warn_on_profile(col_profile, e):
     import warnings
 
     warning_msg = "\n\n!!! WARNING Partial Profiler Failure !!!\n\n"
-    warning_msg += "Profiling Type: {}".format(col_profile)
-    warning_msg += "\nException: {}".format(type(e).__name__)
-    warning_msg += "\nMessage: {}".format(e)
+    warning_msg += f"Profiling Type: {col_profile}"
+    warning_msg += f"\nException: {type(e).__name__}"
+    warning_msg += f"\nMessage: {e}"
     # This is considered a major error
     if type(e).__name__ == "ValueError":
         raise ValueError(e)
@@ -169,7 +164,7 @@ def warn_on_profile(col_profile, e):
     warnings.warn(warning_msg, RuntimeWarning, stacklevel=2)
 
 
-def partition(data, chunk_size):
+def partition(data: list, chunk_size: int) -> Generator[list, None, Any]:
     """
     Create a generator which returns data in specified chunk size.
 
@@ -182,7 +177,35 @@ def partition(data, chunk_size):
         yield data[idx : idx + chunk_size]
 
 
-def suggest_pool_size(data_size=None, cols=None):
+def auto_multiprocess_toggle(
+    data: DataFrame,
+    num_rows_threshold: int = 750000,
+    num_cols_threshold: int = 20,
+) -> bool:
+    """
+    Automate multiprocessing toggle depending on dataset sizes.
+
+    :param data: a dataset
+    :type data: pandas.DataFrame
+    :param num_rows_threshold: threshold for number of rows to
+        use multiprocess
+    :type num_rows_threshold: int
+    :param num_cols_threshold: threshold for number of columns
+        to use multiprocess
+    :type num_cols_threshold: int
+    :return: recommended option.multiprocess.is_enabled value
+    :rtype: bool
+    """
+    # If the number of rows or columns exceed their respective threshold,
+    # we want to turn on multiprocessing
+    if data.shape[0] > num_rows_threshold or data.shape[1] > num_cols_threshold:
+        return True
+    # Otherwise, we do not turn on multiprocessing
+    else:
+        return False
+
+
+def suggest_pool_size(data_size: int = None, cols: int = None) -> int | None:
     """
     Suggest the pool size based on resources.
 
@@ -190,7 +213,7 @@ def suggest_pool_size(data_size=None, cols=None):
     :type data_size: int
     :param cols: columns of the dataset
     :type cols: int
-    :return suggested_pool_size: suggeseted pool size
+    :return suggested_pool_size: suggested pool size
     :rtype suggested_pool_size: int
     """
     # Return if there's no data_size
@@ -216,10 +239,14 @@ def suggest_pool_size(data_size=None, cols=None):
     if cols is not None:
         suggested_pool_size = min(suggested_pool_size, cols)
 
-    return suggested_pool_size
+    return int(suggested_pool_size)
 
 
-def generate_pool(max_pool_size=None, data_size=None, cols=None):
+def generate_pool(
+    max_pool_size: int = None,
+    data_size: int = None,
+    cols: int = None,
+) -> tuple[Pool | None, int | None]:
     """
     Generate a multiprocessing pool to allocate functions too.
 
@@ -254,14 +281,14 @@ def generate_pool(max_pool_size=None, data_size=None, cols=None):
     return pool, max_pool_size
 
 
-def overlap(x1, x2, y1, y2):
+def overlap(x1: int | Any, x2: int | Any, y1: int | Any, y2: int | Any) -> bool:
     """Return True iff [x1:x2] overlaps with [y1:y2]."""
-    if not all([isinstance(i, int) for i in [x1, x2, y1, y2]]):
+    if not all(isinstance(i, int) for i in [x1, x2, y1, y2]):
         return False
     return (y1 <= x1 <= y2) or (y1 <= x2 <= y2) or (x1 <= y1 <= x2) or (x1 <= y2 <= x2)
 
 
-def add_nested_dictionaries(first_dict, second_dict):
+def add_nested_dictionaries(first_dict: dict, second_dict: dict) -> dict:
     """
     Merge two dictionaries together and add values together.
 
@@ -271,7 +298,7 @@ def add_nested_dictionaries(first_dict, second_dict):
     :type second_dict: dict
     :return: merged dictionary
     """
-    merged_dict = {}
+    merged_dict: dict = {}
     if isinstance(first_dict, collections.defaultdict):
         merged_dict = collections.defaultdict(first_dict.default_factory)
 
@@ -293,7 +320,7 @@ def add_nested_dictionaries(first_dict, second_dict):
     return merged_dict
 
 
-def biased_skew(df_series):
+def biased_skew(df_series: Series) -> np.float64:
     """
     Calculate the biased estimator for skewness of the given data.
 
@@ -302,15 +329,15 @@ def biased_skew(df_series):
     :param df_series: data to get skewness of, assuming floats
     :type df_series: pandas Series
     :return: biased skewness
-    :rtype: float
+    :rtype: np.float64
     """
     n = len(df_series)
     if n < 1:
-        return np.nan
+        return np.float64(np.nan)
 
     mean = sum(df_series) / n
     if np.isinf(mean) or np.isnan(mean):
-        return np.nan
+        return np.float64(np.nan)
 
     diffs = df_series - mean
     squared_diffs = diffs**2
@@ -324,14 +351,14 @@ def biased_skew(df_series):
     M3 = 0 if np.abs(M3) < 1e-14 else M3
 
     if M2 == 0:
-        return 0.0
+        return np.float64(0.0)
 
     with np.errstate(all="ignore"):
-        skew = np.sqrt(n) * M3 / np.power(M2, 1.5)
+        skew: np.float64 = np.sqrt(n) * M3 / np.power(M2, 1.5)
     return skew
 
 
-def biased_kurt(df_series):
+def biased_kurt(df_series: Series) -> np.float64:
     """
     Calculate the biased estimator for kurtosis of the given data.
 
@@ -340,15 +367,15 @@ def biased_kurt(df_series):
     :param df_series: data to get kurtosis of, assuming floats
     :type df_series: pandas Series
     :return: biased kurtosis
-    :rtype: float
+    :rtype: np.float64
     """
     n = len(df_series)
     if n < 1:
-        return np.nan
+        return np.float64(np.nan)
 
     mean = sum(df_series) / n
     if np.isinf(mean) or np.isnan(mean):
-        return np.nan
+        return np.float64(np.nan)
 
     diffs = df_series - mean
     squared_diffs = diffs**2
@@ -362,11 +389,41 @@ def biased_kurt(df_series):
     M4 = 0 if np.abs(M4) < 1e-14 else M4
 
     if M2 == 0:
-        return -3.0
+        return np.float64(-3.0)
 
     with np.errstate(all="ignore"):
-        kurt = n * M4 / np.power(M2, 2) - 3
+        kurt: np.float64 = n * M4 / np.power(M2, 2) - 3
     return kurt
+
+
+class Subtractable(Protocol):
+    """Protocol for annotating subtractable types."""
+
+    @abstractmethod
+    def __eq__(self: object, other: object) -> bool:
+        """Compare two objects."""
+        pass
+
+    @abstractmethod
+    def __sub__(self: T, other: T) -> Any:
+        """Compare two subtractables."""
+        pass
+
+
+T = TypeVar("T", bound=Subtractable)
+
+
+@overload
+def find_diff_of_numbers(
+    stat1: int | float | np.float64 | np.int64 | None,
+    stat2: int | float | np.float64 | np.int64 | None,
+) -> Any:
+    ...
+
+
+@overload
+def find_diff_of_numbers(stat1: T | None, stat2: T | None) -> Any:
+    ...
 
 
 def find_diff_of_numbers(stat1, stat2):
@@ -377,22 +434,23 @@ def find_diff_of_numbers(stat1, stat2):
     For ints/floats, returns stat1 - stat2.
 
     :param stat1: the first statistical input
-    :type stat1: Union[int, float]
+    :type stat1: Union[int, float, np.float64, np.int64, None]
     :param stat2: the second statistical input
-    :type stat2: Union[int, float]
+    :type stat2: Union[int, float, np.float64, np.int64, None]
     :return: the difference of the stats
     """
-    diff = "unchanged"
     if stat1 is None and stat2 is None:
         pass
     elif stat1 is None or stat2 is None:
-        diff = [stat1, stat2]
+        return [stat1, stat2]
     elif stat1 != stat2:
-        diff = stat1 - stat2
-    return diff
+        return stat1 - stat2
+    return "unchanged"
 
 
-def find_diff_of_strings_and_bools(stat1, stat2):
+def find_diff_of_strings_and_bools(
+    stat1: str | bool | None, stat2: str | bool | None
+) -> list[str | bool | None] | str:
     """
     Find the difference between two stats.
 
@@ -405,13 +463,14 @@ def find_diff_of_strings_and_bools(stat1, stat2):
     :type stat2: Union[str, bool]
     :return: the difference of the stats
     """
-    diff = "unchanged"
     if stat1 != stat2:
-        diff = [stat1, stat2]
-    return diff
+        return [stat1, stat2]
+    return "unchanged"
 
 
-def find_diff_of_lists_and_sets(stat1, stat2):
+def find_diff_of_lists_and_sets(
+    stat1: list | set | None, stat2: list | set | None
+) -> list[list | set | None] | str:
     """
     Find the difference between two stats.
 
@@ -425,20 +484,29 @@ def find_diff_of_lists_and_sets(stat1, stat2):
     :type stat2: Union[list, set]
     :return: the difference of the stats
     """
-    diff = "unchanged"
     if stat1 is None and stat2 is None:
         pass
     elif stat1 is None or stat2 is None:
-        diff = [stat1, stat2]
-    elif set(stat1) != set(stat2):
-        unique1 = [element for element in stat1 if element not in stat2]
-        shared = [element for element in stat1 if element in stat2]
-        unique2 = [element for element in stat2 if element not in stat1]
-        diff = [unique1, shared, unique2]
-    return diff
+        return [stat1, stat2]
+    elif set(stat1) != set(stat2) or len(stat1) != len(stat2):
+        temp_stat1 = list(copy.deepcopy(stat1))
+        temp_stat2 = list(copy.deepcopy(stat2))
+        shared = []
+        for element in temp_stat1:
+            if element in temp_stat2:
+                shared.append(element)
+                temp_stat2.remove(element)
+        for element in shared:
+            temp_stat1.remove(element)
+
+        return [temp_stat1, shared, temp_stat2]
+
+    return "unchanged"
 
 
-def find_diff_of_dates(stat1, stat2):
+def find_diff_of_dates(
+    stat1: datetime.datetime | None, stat2: datetime.datetime | None
+) -> list | str | None:
     """
     Find the difference between two dates.
 
@@ -455,26 +523,24 @@ def find_diff_of_dates(stat1, stat2):
     :type stat1: datetime.datetime object
     :param stat2: the second statistical input
     :type stat2: datetime.datetime object
-    :return: Difference in stats
-    :rtype: str
+    :return: difference in stats
+    :rtype: Union[List, str]
     """
     # We can use find_diff_of_numbers since datetime objects
     # can be compared and subtracted naturally
-    diff = find_diff_of_numbers(stat1, stat2)
+    diff: datetime.timedelta | list | str = find_diff_of_numbers(stat1, stat2)
     if isinstance(diff, str):
         return diff
     if isinstance(diff, list):
-        # Deal with the case where one stat is None
         return [None if i is None else i.strftime("%x %X") for i in diff]
 
     # Must be timedelta object
     if diff.days >= 0:
         return "+" + str(diff)
-
     return "-" + str(abs(diff))
 
 
-def find_diff_of_dicts(dict1, dict2):
+def find_diff_of_dicts(dict1: dict | None, dict2: dict | None) -> dict | str:
     """
     Find the difference between two dicts.
 
@@ -490,7 +556,10 @@ def find_diff_of_dicts(dict1, dict2):
     :return: Difference in the keys of each dict
     :rtype: dict
     """
-    diff = {}
+    dict1 = dict1 or {}
+    dict2 = dict2 or {}
+
+    diff: dict = {}
     for key, value1 in dict1.items():
         value2 = dict2.get(key, None)
         if isinstance(value1, list):
@@ -499,6 +568,8 @@ def find_diff_of_dicts(dict1, dict2):
             diff[key] = find_diff_of_dates(value1, value2)
         elif isinstance(value1, str):
             diff[key] = find_diff_of_strings_and_bools(value1, value2)
+        elif isinstance(value1, dict) and isinstance(value2, dict):
+            diff[key] = find_diff_of_dicts(value1, value2)
         else:
             diff[key] = find_diff_of_numbers(value1, value2)
 
@@ -509,12 +580,14 @@ def find_diff_of_dicts(dict1, dict2):
 
     # If both dicts have no keys, it is unchanged
     if diff == {}:
-        diff = "unchanged"
+        return "unchanged"
 
     return diff
 
 
-def find_diff_of_matrices(matrix1, matrix2):
+def find_diff_of_matrices(
+    matrix1: np.ndarray | None, matrix2: np.ndarray | None
+) -> np.ndarray | str | None:
     """
     Find the difference between two matrices.
 
@@ -525,21 +598,22 @@ def find_diff_of_matrices(matrix1, matrix2):
     :return: Difference in the matrix
     :rtype: list(list(float))
     """
-    diff = None
-
     if matrix1 is not None and matrix2 is not None:
-        mat1 = np.array(matrix1, dtype=np.float)
-        mat2 = np.array(matrix2, dtype=np.float)
+        mat1 = np.array(matrix1, dtype=np.float64)
+        mat2 = np.array(matrix2, dtype=np.float64)
 
         if mat1.shape == mat2.shape:
-            diff = mat1 - mat2
+            diff: np.ndarray = mat1 - mat2
             if ((diff == 0) | np.isnan(diff)).all():
-                diff = "unchanged"
+                return "unchanged"
+            return diff
 
-    return diff
+    return None
 
 
-def find_diff_of_dicts_with_diff_keys(dict1, dict2):
+def find_diff_of_dicts_with_diff_keys(
+    dict1: dict | None, dict2: dict | None
+) -> list[dict] | str:
     """
     Find the difference between two dicts.
 
@@ -555,9 +629,12 @@ def find_diff_of_dicts_with_diff_keys(dict1, dict2):
     :return: Difference in the keys of each dict
     :rtype: list
     """
-    diff_1 = {}
-    diff_shared = {}
-    diff_2 = {}
+    dict1 = dict1 or {}
+    dict2 = dict2 or {}
+
+    diff_1: dict = {}
+    diff_shared: dict = {}
+    diff_2: dict = {}
     for key, value1 in dict1.items():
         if key in dict2:
             value2 = dict2[key]
@@ -567,6 +644,8 @@ def find_diff_of_dicts_with_diff_keys(dict1, dict2):
                 diff_shared[key] = find_diff_of_dates(value1, value2)
             elif isinstance(value1, str) or isinstance(value1, bool):
                 diff_shared[key] = find_diff_of_strings_and_bools(value1, value2)
+            elif isinstance(value1, dict) and isinstance(value2, dict):
+                diff_shared[key] = find_diff_of_dicts_with_diff_keys(value1, value2)
             else:
                 diff_shared[key] = find_diff_of_numbers(value1, value2)
         else:
@@ -581,12 +660,12 @@ def find_diff_of_dicts_with_diff_keys(dict1, dict2):
 
     # If both dicts have no keys, it is unchanged
     if diff == [{}, {}, {}]:
-        diff = "unchanged"
+        return "unchanged"
 
     return diff
 
 
-def get_memory_size(data, unit="M"):
+def get_memory_size(data: list | np.ndarray | DataFrame, unit: str = "M") -> float:
     """
     Get memory size of the input data.
 
@@ -596,20 +675,20 @@ def get_memory_size(data, unit="M"):
     :type unit: string
     :return: memory size of the input data
     """
-    unit_map = collections.defaultdict(B=0, K=1, M=2, G=3)
+    unit_map: dict = collections.defaultdict(B=0, K=1, M=2, G=3)
     if unit not in unit_map:
         raise ValueError(
             "Currently only supports the "
             "memory size unit in {}".format(list(unit_map.keys()))
         )
-    memory_size = 0
+    memory_size: float = 0
     for sentence in data:
         memory_size += len(sentence.encode("utf-8"))
     memory_size /= 1024.0 ** unit_map[unit]  # Conversion based on unit_map
     return memory_size
 
 
-def method_timeit(method=None, name=None):
+def method_timeit(method: Callable = None, name: str = None) -> Callable:
     """
     Measure execution time of provided method.
 
@@ -621,9 +700,9 @@ def method_timeit(method=None, name=None):
     :type name: str
     """
 
-    def decorator(method, name_dec=None):
+    def decorator(method: Callable, name_dec: str = None) -> Callable:
         @functools.wraps(method)
-        def wrapper(self, *args, **kw):
+        def wrapper(self: Any, *args: Any, **kw: Any) -> Any:
             # necessary bc can't reassign external name
             name_dec = name
             if not name_dec:
@@ -642,8 +721,8 @@ def method_timeit(method=None, name=None):
 
 
 def perform_chi_squared_test_for_homogeneity(
-    categories1, sample_size1, categories2, sample_size2
-):
+    categories1: dict, sample_size1: int, categories2: dict, sample_size2: int
+) -> dict[str, int | float | None]:
     """
     Perform a Chi Squared test for homogeneity between two groups.
 
@@ -658,7 +737,11 @@ def perform_chi_squared_test_for_homogeneity(
     :return: Results of the chi squared test
     :rtype: dict
     """
-    results = {"chi2-statistic": None, "df": None, "p-value": None}
+    results: dict[str, int | float | None] = {
+        "chi2-statistic": None,
+        "deg_of_free": None,
+        "p-value": None,
+    }
 
     cat_counts = add_nested_dictionaries(categories1, categories2)
 
@@ -675,8 +758,8 @@ def perform_chi_squared_test_for_homogeneity(
 
     # Calculate degrees of freedom
     # df = (rows - 1) * (cols - 1), in the case of two groups reduces to cols - 1
-    df = num_cats - 1
-    results["df"] = df
+    deg_of_free = num_cats - 1
+    results["deg_of_free"] = deg_of_free
 
     total = sample_size1 + sample_size2
 
@@ -698,35 +781,38 @@ def perform_chi_squared_test_for_homogeneity(
     results["chi2-statistic"] = chi2_statistic
 
     # Calculate p-value, i.e. P(X > chi2_statistic)
-    p_value = 1 - scipy.stats.chi2(df).cdf(chi2_statistic)
+    p_value: float = 1 - scipy.stats.chi2(deg_of_free).cdf(chi2_statistic)
     results["p-value"] = p_value
 
     return results
 
 
-def chunk(it, size):
+def chunk(lst: list, size: int) -> Iterator[tuple]:
     """
     Chunk things out.
 
-    :param top_profile: Categories and respective counts of the second group
-    :type top_profile: list
-    :param other_profile: Number of samples in second group
-    :type other_profile: int
-    :return: Merge of two profile objects
-    :rtype: Profile
+    :param lst: List to chunk
+    :type lst: list
+    :param size: Size of each chunk
+    :type size: int
+    :return: Iterator that produces tuples of each chunk
+    :rtype: Iterator[Tuple]
     """
-    it = iter(it)
-    return iter(lambda: tuple(islice(it, size)), ())
+    iterator = iter(lst)
+    return iter(lambda: tuple(islice(iterator, size)), ())
 
 
-def merge(top_profile, other_profile=None):
+def merge(
+    top_profile: profile_builder.BaseProfiler,
+    other_profile: profile_builder.BaseProfiler = None,
+) -> profile_builder.BaseProfiler:
     """
     Merge two Profiles.
 
-    :param top_profile: Categories and respective counts of the second group
-    :type top_profile: list
-    :param other_profile: Number of samples in second group
-    :type other_profile: int
+    :param top_profile: First profile
+    :type top_profile: Profile
+    :param other_profile: Second profile
+    :type other_profile: Profile
     :return: Merge of two profile objects
     :rtype: Profile
     """
@@ -735,7 +821,10 @@ def merge(top_profile, other_profile=None):
     return top_profile + other_profile
 
 
-def merge_profile_list(list_of_profiles, pool_count=5):
+def merge_profile_list(
+    list_of_profiles: list[profile_builder.BaseProfiler],
+    pool_count: int = 5,
+) -> profile_builder.BaseProfiler:
     """Merge list of profiles into a single profile.
 
     :param list_of_profiles: Categories and respective counts of the second group
@@ -749,13 +838,72 @@ def merge_profile_list(list_of_profiles, pool_count=5):
     # remove the labeler model from the first profile object
     # assuming that the labeler models are all the same across each profile
     # in the list
-    for profile_idx, profile in enumerate(list_of_profiles):
-        data_labeler = list_of_profiles[profile_idx]._remove_data_labelers()
+    for profile in list_of_profiles:
+        data_labeler = profile._remove_data_labelers()
 
     while len(list_of_profiles) > 1:
-        list_of_profiles = chunk(list_of_profiles, 2)
+        list_of_profiles_iterator = chunk(list_of_profiles, 2)
         with mp.Pool(pool_count) as p:
-            list_of_profiles = p.starmap(merge, list_of_profiles)
+            list_of_profiles = p.starmap(merge, list_of_profiles_iterator)
 
     list_of_profiles[0]._restore_data_labelers(data_labeler)
     return list_of_profiles[0]
+
+
+def reload_labeler_from_options_or_get_new(
+    data_labeler_load_attr: dict, config: dict | None = None
+) -> BaseDataLabeler | None:
+    """
+    If required by the load_attr load a data labeler, but reuse from config if possible.
+
+    :param data_labeler_load_attr: dictionary with attributes and values.
+    :type data_labeler_load_attr: dict[string, dict]
+    :param config: config for loading classes to reuse an existing labeler
+    :type config: dict[string, dict]
+
+    :return: Profiler with attributes populated.
+    :rtype: DataLabelerOptions
+    """
+    data_labeler_object: BaseDataLabeler | None = None
+    if "from_library" in data_labeler_load_attr:
+        data_labeler_object = (
+            (
+                # get options from DLOptions first for reuse
+                config.get("DataLabelerOptions", {})
+                .get("from_library", {})
+                .get(data_labeler_load_attr["from_library"])
+                or
+                # get options from DL column second for reuse
+                config.get("DataLabelerColumn", {})
+                .get("from_library", {})
+                .get(data_labeler_load_attr["from_library"])
+            )
+            if config is not None
+            else None
+        )
+        # load from library if not in options
+        if data_labeler_object is None:
+            data_labeler_object = DataLabeler.load_from_library(
+                data_labeler_load_attr["from_library"]
+            )
+            # save labelers so as not to reload if already loaded
+        if data_labeler_object is not None and config is not None:
+            for class_name in ["DataLabelerOptions", "DataLabelerColumn"]:
+                # get each layer of dicts to not overwrite
+                class_options = config.get(class_name, {})
+                libray_options = class_options.get("from_library", {})
+                # don't replace the one that already exists
+                if data_labeler_load_attr["from_library"] in libray_options:
+                    continue
+                labeler_options = {
+                    data_labeler_load_attr["from_library"]: data_labeler_object
+                }
+                # update the dicts each
+                libray_options.update(labeler_options)
+                class_options["from_library"] = libray_options
+                config[class_name] = class_options
+    elif "from_disk" in data_labeler_load_attr:
+        raise NotImplementedError(
+            "Models intialized from disk have not yet been made deserializable"
+        )
+    return data_labeler_object

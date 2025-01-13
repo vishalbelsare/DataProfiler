@@ -1,11 +1,7 @@
-from __future__ import absolute_import, print_function
-
 import locale
 import os
-import sys
 import unittest
 from io import BytesIO, StringIO
-from unittest import mock
 
 from dataprofiler.data_readers.base_data import BaseData
 
@@ -75,6 +71,7 @@ class TestBaseDataClass(unittest.TestCase):
         class FakeDataClass:
             # matches the `data_type` value in BaseData for validating priority
             data_type = "FakeData"
+            options = {"not_empty": "data"}
 
             def func1(self):
                 return "success"
@@ -93,7 +90,7 @@ class TestBaseDataClass(unittest.TestCase):
             data.test
 
         # validate it will take BaseData attribute over the data attribute
-        self.assertIsNone(data.data_type)
+        self.assertFalse(data.options)
 
         # validate will auto call the data function if it doesn't exist in
         # BaseData

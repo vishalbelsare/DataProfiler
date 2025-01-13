@@ -137,11 +137,15 @@ class TestDataLabeler(unittest.TestCase):
     def test_load_from_library(self, *mocks):
         data_labeler = dp.DataLabeler.load_from_library("structured_model")
         self.assertIsInstance(data_labeler, BaseDataLabeler)
+        # Testing to ensure _default_model_loc is set correctly
+        self.assertEqual("structured_model", data_labeler._default_model_loc)
 
         data_labeler = dp.DataLabeler.load_from_library(
             "structured_model", trainable=True
         )
         self.assertIsInstance(data_labeler, TrainableDataLabeler)
+        # Testing to ensure _default_model_loc is set correctly
+        self.assertEqual("structured_model", data_labeler._default_model_loc)
 
     @mock.patch("tensorflow.keras.models.load_model")
     def test_load_from_disk(self, *mocks):
@@ -428,7 +432,7 @@ class TestLoadedDataLabeler(unittest.TestCase):
         invalid_data = ["string", 1, None, dict()]
         print("\nInvalid Data Checks:")
         for data in invalid_data:
-            print("\tChecking data format: {}".format(str(type(data))))
+            print(f"\tChecking data format: {str(type(data))}")
             _invalid_check(data)
 
             # cannot predict dict
@@ -440,7 +444,7 @@ class TestLoadedDataLabeler(unittest.TestCase):
     def test_valid_fit_data_formats(self, mock_open, mock_load_model):
         def _valid_check(data):
             try:
-                print("\tChecking data format: {}".format(str(type(data))))
+                print(f"\tChecking data format: {str(type(data))}")
                 data = BaseDataLabeler._check_and_return_valid_data_format(
                     data, fit_or_predict="fit"
                 )
@@ -465,7 +469,7 @@ class TestLoadedDataLabeler(unittest.TestCase):
     def test_valid_predict_data_formats(self, mock_open, mock_load_model):
         def _valid_check(data):
             try:
-                print("\tChecking data format: {}".format(str(type(data))))
+                print(f"\tChecking data format: {str(type(data))}")
                 data = BaseDataLabeler._check_and_return_valid_data_format(
                     data, fit_or_predict="predict"
                 )
